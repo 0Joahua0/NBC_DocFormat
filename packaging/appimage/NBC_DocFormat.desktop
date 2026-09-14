@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=NBC_DocFormat
+Comment=GB/T 9704-2012 公文格式一键修复
+Exec=NBC_DocFormat_linux
+Icon=NBC_DocFormat
+Type=Application
+Categories=Office;WordProcessor;
+Terminal=false
