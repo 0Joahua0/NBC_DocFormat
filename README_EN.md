@@ -3,7 +3,7 @@
 A local Word document formatting tool for Chinese official-document workflows. It supports one-click processing, format diagnosis, punctuation repair, and configurable formatting presets.
 
 <p align="center">
-  <img src="assets/screenshot.png" alt="NBC_DocFormat screenshot" width="900">
+  <img src="assets/imageforgithub.png" alt="NBC document format processor" width="900">
 </p>
 
 <p align="center">
@@ -33,6 +33,12 @@ Current changes include:
 - Punctuation repair checks the `·` character and applies the required font handling
 - Feature-card images and the UI theme are updated to a blue style
 - Four client builds are provided: Windows 10/11, Windows 7/8 compatible, Linux x86_64, and Linux ARM64
+
+## Interface Preview
+
+<p align="center">
+  <img src="assets/screenshot.png" alt="NBC_DocFormat interface screenshot" width="900">
+</p>
 
 ## Client Builds
 

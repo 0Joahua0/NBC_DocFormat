@@ -3,7 +3,7 @@
 面向 Word 公文材料的本地格式处理工具，支持一键处理、格式诊断、标点修复和可配置格式预设。
 
 <p align="center">
-  <img src="assets/screenshot.png" alt="NBC_DocFormat截图" width="900">
+  <img src="assets/imageforgithub.png" alt="NBC公文格式处理器" width="900">
 </p>
 
 <p align="center">
@@ -33,6 +33,12 @@ NBC_DocFormat 用于处理 `.docx` 公文材料中的常见格式问题，包括
 - 标点修复增加对字符 `·` 的检测和字体处理
 - 功能按钮插图和界面主题调整为蓝色风格
 - 提供 Windows 10/11、Windows 7/8 兼容、Linux x86_64、Linux ARM64 四类客户端
+
+## 界面预览
+
+<p align="center">
+  <img src="assets/screenshot.png" alt="NBC_DocFormat软件界面截图" width="900">
+</p>
 
 ## 核心能力
 
