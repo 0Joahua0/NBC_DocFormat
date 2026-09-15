@@ -3,7 +3,7 @@
 from zipfile import ZipFile
 
 from docx import Document
-from docx.enum.text import WD_LINE_SPACING
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.opc.packuri import PackURI
 from docx.opc.part import Part
@@ -57,6 +57,8 @@ def test_nbc_replaces_legal_builtin_preset():
 
     preset = PRESETS["nbc"]
     assert preset["name"] == "NBC格式"
+    assert preset["page_number_font"] == "Times New Roman"
+    assert preset["page_number_position"] == "center"
     assert preset["page"] == {
         "top": 3.4,
         "bottom": 2.8,
@@ -133,6 +135,34 @@ def test_nbc_preset_formats_docx_with_reference_layout(tmp_path):
     assert date.alignment == 1
     assert date.paragraph_format.line_spacing_rule == WD_LINE_SPACING.SINGLE
     assert abs(float(date.paragraph_format.line_spacing) - 1.0) < 0.02
+
+
+def test_nbc_page_numbers_are_centered_times_new_roman_fields(tmp_path):
+    source = tmp_path / "source.docx"
+    output = tmp_path / "output.docx"
+
+    document = Document()
+    document.add_paragraph("NBC页码格式测试")
+    document.save(source)
+
+    format_document(str(source), str(output), preset_name="nbc")
+
+    footer = Document(output).sections[0].footer
+    paragraph = footer.paragraphs[0]
+    assert paragraph.alignment == WD_ALIGN_PARAGRAPH.CENTER
+    assert "— 1 —" in paragraph.text
+
+    for run in paragraph.runs:
+        fonts = run._r.rPr.find(qn("w:rFonts"))
+        assert fonts is not None
+        for attribute in ("ascii", "hAnsi", "eastAsia", "cs"):
+            assert fonts.get(qn(f"w:{attribute}")) == "Times New Roman"
+
+    field_types = [
+        field.get(qn("w:fldCharType"))
+        for field in paragraph._p.iter(qn("w:fldChar"))
+    ]
+    assert field_types == ["begin", "separate", "end"]
 
 
 def test_nbc_placeholder_date_is_detected_from_reference_template(tmp_path):

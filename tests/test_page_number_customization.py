@@ -5,6 +5,7 @@ import zipfile
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml.ns import qn
 from docx.shared import Cm
 
 from scripts.formatter import PRESETS, add_page_number, format_document
@@ -71,6 +72,34 @@ def test_page_number_styles_support_plain_text_and_total_pages():
     assert "PAGE" in xml
     assert "NUMPAGES" in xml
     assert " / " in _footer_text(doc.sections[0].footer)
+
+
+def test_page_number_field_has_wps_compatible_cached_result():
+    doc = Document()
+
+    add_page_number(
+        doc,
+        font_name="Times New Roman",
+        style="plain",
+        position="center",
+    )
+
+    paragraph = doc.sections[0].footer.paragraphs[0]
+    field_types = [
+        field.get(qn("w:fldCharType"))
+        for field in paragraph._p.iter(qn("w:fldChar"))
+    ]
+    assert field_types == ["begin", "separate", "end"]
+    assert _footer_text(doc.sections[0].footer) == "1"
+    assert "PAGE \\* MERGEFORMAT" in paragraph._p.xml
+
+    begin = next(paragraph._p.iter(qn("w:fldChar")))
+    assert begin.get(qn("w:dirty")) == "true"
+    for run in paragraph.runs:
+        fonts = run._r.rPr.find(qn("w:rFonts"))
+        assert fonts is not None
+        for attribute in ("ascii", "hAnsi", "eastAsia", "cs"):
+            assert fonts.get(qn(f"w:{attribute}")) == "Times New Roman"
 
 
 def test_custom_format_replaces_existing_page_number():

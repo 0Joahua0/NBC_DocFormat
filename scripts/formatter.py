@@ -605,10 +605,10 @@ PRESETS = {
         'name': 'NBC格式',
         'deep_clean': False,
         'page_number': True,
-        'page_number_font': '方正仿宋_GBK',
+        'page_number_font': 'Times New Roman',
         'page_number_size': 14,
         'page_number_style': 'dash',
-        'page_number_position': 'outside',
+        'page_number_position': 'center',
         'page_number_offset_mm': 10.5,
         'replace_existing_page_number': True,
         'page': {
@@ -1934,18 +1934,33 @@ def add_page_number(
                 para.clear()
 
         def _add_field(paragraph, instruction):
+            """添加带缓存结果的完整 Word 域，兼容 WPS 的页码渲染。"""
+            instruction = instruction.strip()
+
             begin_run = paragraph.add_run()
             begin = OxmlElement('w:fldChar')
             begin.set(qn('w:fldCharType'), 'begin')
+            begin.set(qn('w:dirty'), 'true')
             begin_run._r.append(begin)
             set_font(begin_run, font_name, font_name, font_size, bold=False)
 
             instruction_run = paragraph.add_run()
             instruction_text = OxmlElement('w:instrText')
             instruction_text.set(qn('xml:space'), 'preserve')
-            instruction_text.text = instruction
+            instruction_text.text = f' {instruction} \\* MERGEFORMAT '
             instruction_run._r.append(instruction_text)
             set_font(instruction_run, font_name, font_name, font_size, bold=False)
+
+            separate_run = paragraph.add_run()
+            separate = OxmlElement('w:fldChar')
+            separate.set(qn('w:fldCharType'), 'separate')
+            separate_run._r.append(separate)
+            set_font(separate_run, font_name, font_name, font_size, bold=False)
+
+            # 页码域必须带一个缓存结果。Word 会重新计算该值；WPS 在尚未
+            # 刷新字段时也能先显示数字，而不是把 {PAGE} 当作普通文本显示。
+            result_run = paragraph.add_run('1')
+            set_font(result_run, font_name, font_name, font_size, bold=False)
 
             end_run = paragraph.add_run()
             end = OxmlElement('w:fldChar')

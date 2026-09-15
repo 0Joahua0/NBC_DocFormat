@@ -32,7 +32,7 @@ _configure_console_encoding()
 # 配置
 APP_NAME = "NBC_DocFormat"
 APP_NAME_EN = "NBC_DocFormat"
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 MAIN_SCRIPT = "NBC_DocFormat.py"
 MACOS_APP_BUNDLE_NAME = os.environ.get("MACOS_APP_BUNDLE_NAME", "NBC_DocFormat").strip()
 

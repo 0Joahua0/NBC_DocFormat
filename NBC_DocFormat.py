@@ -11,6 +11,7 @@ import re
 import uuid
 import ctypes
 import time
+import webbrowser
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from pathlib import Path
@@ -113,7 +114,7 @@ except Exception as e:
     _DND_DISABLED_REASON = f"拖拽运行库不可用：{e}"
     _DND_AVAILABLE = False
 
-__version__ = '1.0.0'
+__version__ = '1.0.1'
 
 def resource_path(*parts):
     """返回源码运行或 PyInstaller 打包后的资源路径。"""
@@ -215,14 +216,25 @@ class AboutDialog(tk.Toplevel):
 
         body = tk.Frame(self, bg=Theme.BG, padx=24, pady=20)
         body.pack(fill='both', expand=True)
-        about_text = (
+        notice_text = (
             '所有文档处理均在本地完成，不上传、不收集任何数据。\n'
             '处理结果仅供参考，建议人工复核。'
         )
         tk.Label(
-            body, text=about_text, font=get_font(10), bg=Theme.BG,
+            body, text=notice_text, font=get_font(10), bg=Theme.BG,
             fg=Theme.TEXT, justify='left', anchor='w', wraplength=500,
         ).pack(anchor='w')
+        upstream_url = 'https://github.com/KaguraNanaga/docformat-gui'
+        upstream_label = tk.Label(
+            body,
+            text='本项目基于原项目 KaguraNanaga/docformat-gui 修改开发。',
+            font=get_font(10), bg=Theme.BG, fg=Theme.PRIMARY,
+            justify='left', anchor='w', cursor='hand2', wraplength=500,
+        )
+        upstream_label.pack(anchor='w', pady=(8, 0))
+        upstream_label.bind(
+            '<Button-1>', lambda _event: webbrowser.open(upstream_url),
+        )
         actions = tk.Frame(body, bg=Theme.BG)
         actions.pack(fill='x', pady=(16, 0))
         tk.Button(

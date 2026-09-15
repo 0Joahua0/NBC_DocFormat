@@ -30,7 +30,7 @@ def test_application_ui_does_not_show_community_edition_notices():
     assert "AboutDialog" in source
 
 
-def test_application_ui_uses_nbc_branding_without_visible_version_or_author():
+def test_application_ui_uses_nbc_branding_without_visible_version():
     source = _read("NBC_DocFormat.py")
     build_source = _read("build.py")
     desktop_entry = _read("packaging/appimage/NBC_DocFormat.desktop")
@@ -42,7 +42,6 @@ def test_application_ui_uses_nbc_branding_without_visible_version_or_author():
 
     for old_text in (
         "公文" + "格式处理工具",
-        "KaguraNanaga",
         "v{__version__}",
         "版本:",
     ):
@@ -51,11 +50,13 @@ def test_application_ui_uses_nbc_branding_without_visible_version_or_author():
     assert "# {APP_NAME} v{VERSION}" not in build_source
 
 
-def test_about_dialog_only_keeps_local_document_notice():
+def test_about_dialog_includes_local_notice_and_upstream_attribution():
     source = _read("NBC_DocFormat.py")
 
     assert "所有文档处理均在本地完成，不上传、不收集任何数据。" in source
     assert "处理结果仅供参考，建议人工复核。" in source
+    assert "本项目基于原项目 KaguraNanaga/docformat-gui 修改开发。" in source
+    assert "https://github.com/KaguraNanaga/docformat-gui" in source
 
     for removed_about_text in (
         "一键将 Word 文档排版为标准公文格式",
