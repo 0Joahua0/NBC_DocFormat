@@ -39,7 +39,9 @@ def test_format_document_preserves_mixed_and_standalone_media(tmp_path):
     doc.add_paragraph("关于图片保留的报告")
     mixed = doc.add_paragraph()
     mixed.add_run("一是")
-    mixed.add_run().add_picture(str(image_path), width=Inches(0.2))
+    mixed_media_and_text = mixed.add_run()
+    mixed_media_and_text.add_picture(str(image_path), width=Inches(0.2))
+    mixed_media_and_text.add_text("“AI2026”")
     mixed.add_run("推进重点工作。")
     media_only = doc.add_paragraph()
     media_only.add_run().add_picture(str(image_path), width=Inches(0.2))
@@ -59,6 +61,7 @@ def test_format_document_preserves_mixed_and_standalone_media(tmp_path):
     media_paragraphs = [p for p in formatted.paragraphs if _has_drawing(p)]
     assert len(media_paragraphs) == 2
     assert all(p.paragraph_format.line_spacing_rule == WD_LINE_SPACING.SINGLE for p in media_paragraphs)
+    assert any("“AI2026”" in p.text for p in media_paragraphs)
     xml = "".join(p._p.xml for p in formatted.paragraphs)
     assert "<w:pict" in xml
     assert "<w:object" in xml

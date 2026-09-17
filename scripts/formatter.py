@@ -37,13 +37,21 @@ from docx.enum.table import WD_ROW_HEIGHT_RULE
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 from docx.oxml.ns import qn
-from docx.oxml import OxmlElement
+from docx.oxml import OxmlElement, parse_xml
 try:
     from scripts.east_asian_typography import apply_chinese_line_break_rules
-    from scripts.punctuation import normalize_middle_dot_fonts
+    from scripts.punctuation import (
+        iter_paragraph_runs,
+        normalize_chinese_quote_fonts,
+        normalize_middle_dot_fonts,
+    )
 except ModuleNotFoundError:  # Support direct execution from scripts/.
     from east_asian_typography import apply_chinese_line_break_rules
-    from punctuation import normalize_middle_dot_fonts
+    from punctuation import (
+        iter_paragraph_runs,
+        normalize_chinese_quote_fonts,
+        normalize_middle_dot_fonts,
+    )
 
 logger = logging.getLogger('NBC_DocFormat.formatter')
 DEFAULT_PAGE_NUMBER_OFFSET_MM = 10
@@ -412,7 +420,7 @@ def _format_footnotes(doc, fmt):
     if footnotes_part is None:
         return 0
 
-    root = etree.fromstring(footnotes_part.blob)
+    root = parse_xml(footnotes_part.blob)
     spacing_type, spacing_value = _resolve_line_spacing(fmt, 12, 'multiple')
     formatted = 0
 
@@ -455,6 +463,10 @@ def _format_footnotes(doc, fmt):
                     rpr = OxmlElement('w:rPr')
                     run.insert(0, rpr)
                 _set_footnote_run_properties(rpr, fmt)
+
+            paragraph_wrapper = Paragraph(paragraph, doc.part)
+            normalize_chinese_quote_fonts(paragraph_wrapper, fmt.get('font_cn'))
+            normalize_middle_dot_fonts(paragraph_wrapper)
 
     footnotes_part._blob = etree.tostring(
         root, encoding='UTF-8', xml_declaration=True, standalone=True,
@@ -729,6 +741,62 @@ def _iter_block_items(doc):
             yield Paragraph(child, doc)
         elif child.tag.endswith('}tbl'):
             yield Table(child, doc)
+
+
+def _iter_nested_tables(table):
+    """Yield tables nested inside ``table`` exactly once, depth first."""
+    seen_cells = set()
+    seen_tables = set()
+
+    def _walk(current_table):
+        for row in current_table.rows:
+            for cell in row.cells:
+                cell_key = id(cell._tc)
+                if cell_key in seen_cells:
+                    continue
+                seen_cells.add(cell_key)
+                for nested_table in cell.tables:
+                    table_key = id(nested_table._tbl)
+                    if table_key in seen_tables:
+                        continue
+                    seen_tables.add(table_key)
+                    yield nested_table
+                    yield from _walk(nested_table)
+
+    yield from _walk(table)
+
+
+def _format_nested_table_typography(
+    table,
+    font_cn,
+    font_en,
+    size,
+    *,
+    bold=False,
+    header_bold=False,
+):
+    """Apply table typography to nested tables omitted by ``Document.tables``."""
+    seen_cells = set()
+    for row_index, row in enumerate(table.rows):
+        for cell in row.cells:
+            cell_key = id(cell._tc)
+            if cell_key in seen_cells:
+                continue
+            seen_cells.add(cell_key)
+            for paragraph in cell.paragraphs:
+                runs = iter_paragraph_runs(paragraph)
+                if not any((run.text or '').strip() for run in runs):
+                    continue
+                for run in runs:
+                    set_font(
+                        run,
+                        font_cn,
+                        font_en,
+                        size,
+                        bold=(bold or (row_index == 0 and header_bold)),
+                    )
+                normalize_chinese_quote_fonts(paragraph, font_cn)
+                normalize_middle_dot_fonts(paragraph)
 
 
 def _set_table_borders(table, size_pt=0.5, color="000000"):
@@ -1028,7 +1096,7 @@ def _build_text_context(doc):
     all_texts = []
     all_texts_idx_map = {}
     for i, para in enumerate(doc.paragraphs):
-        text = para.text.strip()
+        text = _paragraph_text(para).strip()
         if text:
             all_texts_idx_map[i] = len(all_texts)
             all_texts.append(text)
@@ -1047,6 +1115,16 @@ def _run_has_media(run):
 
 def _paragraph_has_media(para):
     return _xml_has_media(getattr(para._p, 'xml', ''))
+
+
+def _paragraph_text(para):
+    """Return text from direct and wrapped runs across python-docx versions."""
+    return ''.join(run.text for run in iter_paragraph_runs(para))
+
+
+def _paragraph_has_wrapped_runs(para):
+    """Return whether runs are nested in hyperlinks, revisions, or controls."""
+    return any(run._r.getparent() is not para._p for run in iter_paragraph_runs(para))
 
 
 def _set_media_paragraph_single_spacing(para):
@@ -1386,7 +1464,7 @@ def _ensure_structural_blank_lines(doc, line_spacing_value=28, line_spacing_type
     entries = []
     prev_para_type = None
     for i, para in enumerate(doc.paragraphs):
-        text = para.text.strip()
+        text = _paragraph_text(para).strip()
         if not text:
             continue
         para_type = detect_para_type(
@@ -1798,7 +1876,7 @@ def format_paragraph(para, fmt, para_type, line_spacing_pt=28, first_line_bold=F
         # 首句以中文句号“。”作为结束
         full_text = para.text
         first_sentence_end = full_text.find('。')
-        if first_sentence_end != -1 and not has_media:
+        if first_sentence_end != -1 and not has_media and not _paragraph_has_wrapped_runs(para):
             split_idx = first_sentence_end + 1
             first_part = full_text[:split_idx]
             rest_part = full_text[split_idx:]
@@ -1815,11 +1893,11 @@ def format_paragraph(para, fmt, para_type, line_spacing_pt=28, first_line_bold=F
                 set_font(run2, fmt['font_cn'], fmt['font_en'], fmt['size'], fmt.get('bold', False), revision_mode=revision_mode)
         else:
             # 没找到中文句号，正常处理
-            for run in para.runs:
+            for run in iter_paragraph_runs(para):
                 set_font(run, fmt['font_cn'], fmt['font_en'], fmt['size'], fmt.get('bold', False), revision_mode=revision_mode)
     else:
         # 正文里的序列词加粗前缀
-        if bold_serial and para_type == 'body' and not has_media:
+        if bold_serial and para_type == 'body' and not has_media and not _paragraph_has_wrapped_runs(para):
             _SERIAL_PATTERNS = [
                 r'^([一二三四五六七八九十]{1,3}是)([：:、]?)',       # 一是、二是
                 r'^([一二三四五六七八九十]{1,3}要)([：:、]?)',       # 一要、二要
@@ -1841,13 +1919,15 @@ def format_paragraph(para, fmt, para_type, line_spacing_pt=28, first_line_bold=F
                 if rest:
                     run2 = para.add_run(rest)
                     set_font(run2, fmt['font_cn'], fmt['font_en'], fmt['size'], fmt.get('bold', False), revision_mode=revision_mode)
+                normalize_chinese_quote_fonts(para, fmt['font_cn'])
                 normalize_middle_dot_fonts(para)
                 return
 
         # 正常处理
-        for run in para.runs:
+        for run in iter_paragraph_runs(para):
             set_font(run, fmt['font_cn'], fmt['font_en'], fmt['size'], fmt.get('bold', False), revision_mode=revision_mode)
 
+    normalize_chinese_quote_fonts(para, fmt['font_cn'])
     normalize_middle_dot_fonts(para)
 
     # 修订模式：若段落格式有改动则嵌入 pPrChange
@@ -2116,7 +2196,7 @@ def format_document(input_path, output_path, preset_name='official', progress_ca
     prev_para_type = None
 
     for i, para in enumerate(doc.paragraphs):
-        text = para.text.strip()
+        text = _paragraph_text(para).strip()
         if not text:
             if _paragraph_has_media(para):
                 _set_media_paragraph_single_spacing(para)
@@ -2295,10 +2375,13 @@ def format_document(input_path, output_path, preset_name='official', progress_ca
                 cell_text = ''.join(p.text for p in cell.paragraphs).strip()
                 for para in cell.paragraphs:
                     # 字体设置
-                    if para.text.strip():
+                    paragraph_runs = iter_paragraph_runs(para)
+                    if any((run.text or '').strip() for run in paragraph_runs):
                         is_header = (row_idx == 0 and tbl_header_bold)
-                        for run in para.runs:
+                        for run in paragraph_runs:
                             set_font(run, tbl_font_cn, tbl_font_en, tbl_size, bold=(tbl_bold or is_header))
+                        normalize_chinese_quote_fonts(para, tbl_font_cn)
+                        normalize_middle_dot_fonts(para)
 
                     # 段落格式
                     para.paragraph_format.first_line_indent = Pt(tbl_first_line_indent)
@@ -2346,6 +2429,20 @@ def format_document(input_path, output_path, preset_name='official', progress_ca
             else:
                 if not (isinstance(next_block, Paragraph) and not next_block.text.strip()):
                     _insert_paragraph_after_table(table, text="")
+
+    # python-docx exposes only top-level tables through Document.tables.  Run
+    # a typography pass over nested tables so their Latin text, digits, quotes,
+    # and middle dots follow the same NBC rules as ordinary table cells.
+    for top_level_table in doc.tables:
+        for nested_table in _iter_nested_tables(top_level_table):
+            _format_nested_table_typography(
+                nested_table,
+                tbl_font_cn,
+                tbl_font_en,
+                tbl_size,
+                bold=tbl_bold,
+                header_bold=tbl_header_bold,
+            )
     
     # 5. 添加页码
     _progress(78, 100, '添加页码...')

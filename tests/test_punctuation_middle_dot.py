@@ -55,3 +55,31 @@ def test_formatter_preserves_required_middle_dot_font(tmp_path):
     paragraph = next(p for p in Document(output).paragraphs if "亲清直通车" in p.text)
     middle_dot_run = next(run for run in paragraph.runs if run.text == "·")
     assert all(value == MIDDLE_DOT_FONT_CN for value in _run_font_values(middle_dot_run).values())
+
+
+def test_punctuation_processing_splits_quotes_without_changing_latin_or_digits(tmp_path):
+    source = tmp_path / "source.docx"
+    output = tmp_path / "output.docx"
+
+    document = Document()
+    paragraph = document.add_paragraph()
+    run = paragraph.add_run("中文“AI2026”和‘B2’")
+    rfonts = run._r.get_or_add_rPr().get_or_add_rFonts()
+    rfonts.set(qn("w:eastAsia"), "方正仿宋_GBK")
+    for attribute in ("ascii", "hAnsi", "cs"):
+        rfonts.set(qn(f"w:{attribute}"), "Times New Roman")
+    document.save(source)
+
+    process_document(str(source), str(output))
+
+    fixed = Document(output).paragraphs[0]
+    assert fixed.text == "中文“AI2026”和‘B2’"
+    for fixed_run in fixed.runs:
+        fonts = _run_font_values(fixed_run)
+        if any(char in fixed_run.text for char in "“”‘’"):
+            assert set(fixed_run.text) <= set("“”‘’")
+            assert all(value == "方正仿宋_GBK" for value in fonts.values())
+        if any(char.isascii() and char.isalnum() for char in fixed_run.text):
+            assert fonts["ascii"] == "Times New Roman"
+            assert fonts["hAnsi"] == "Times New Roman"
+            assert fonts["cs"] == "Times New Roman"

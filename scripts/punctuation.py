@@ -38,6 +38,13 @@ _PLACEHOLDER_PREFIX = "\x02PROT"
 MIDDLE_DOT = "·"
 MIDDLE_DOT_FONT_CN = "方正仿宋_GBK"
 MIDDLE_DOT_ALLOWED_FONTS = {MIDDLE_DOT_FONT_CN, "方正仿宋"}
+CHINESE_QUOTE_CHARS = frozenset({
+    LEFT_DOUBLE_QUOTE,
+    RIGHT_DOUBLE_QUOTE,
+    LEFT_SINGLE_QUOTE,
+    RIGHT_SINGLE_QUOTE,
+})
+_XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
 
 
 def _protect_special_patterns(text):
@@ -277,6 +284,186 @@ def _run_font_values(run):
     return values
 
 
+def _run_east_asian_font(run):
+    rpr = run._element.rPr
+    if rpr is None or rpr.rFonts is None:
+        return None
+    return rpr.rFonts.get(qn("w:eastAsia"))
+
+
+def _set_run_font_slots(run, font_name, *, east_asian_hint=False):
+    """Set every font slot for a punctuation-only run.
+
+    Chinese quotation marks are classified as high-ANSI by Word unless the
+    run carries an East Asian hint.  The caller splits punctuation away from
+    Latin letters and digits first, so changing all slots here cannot affect
+    the Times New Roman formatting required for those characters.
+    """
+    run.font.name = font_name
+    rpr = run._r.get_or_add_rPr()
+    rfonts = rpr.find(qn("w:rFonts"))
+    if rfonts is None:
+        rfonts = OxmlElement("w:rFonts")
+        rpr.insert(0, rfonts)
+    for attr in ("eastAsia", "ascii", "hAnsi", "cs"):
+        rfonts.set(qn("w:" + attr), font_name)
+    if east_asian_hint:
+        rfonts.set(qn("w:hint"), "eastAsia")
+
+
+def _run_has_only_font(run, font_name):
+    rpr = run._element.rPr
+    if rpr is None or rpr.rFonts is None:
+        return False
+    return all(
+        rpr.rFonts.get(qn("w:" + attr)) == font_name
+        for attr in ("eastAsia", "ascii", "hAnsi", "cs")
+    )
+
+
+def _iter_run_elements(container):
+    """Yield textual runs below a paragraph, including wrapped runs.
+
+    Hyperlinks, content controls, and tracked revisions can wrap ``w:r``
+    elements, so ``Paragraph.runs`` alone is incomplete.  Nested paragraphs
+    (for example inside a drawing's text box) are separate stories and must
+    not be attributed to the outer paragraph.
+    """
+    for child in container:
+        if child.tag == qn("w:p"):
+            continue
+        if child.tag == qn("w:r"):
+            yield child
+            continue
+        yield from _iter_run_elements(child)
+
+
+def iter_paragraph_runs(para):
+    """Return direct and wrapped runs in document order for one paragraph."""
+    return [Run(run_element, para) for run_element in _iter_run_elements(para._p)]
+
+
+def _split_character_parts(text, target_chars):
+    pattern = "(" + "|".join(re.escape(char) for char in sorted(target_chars)) + ")"
+    return [part for part in re.split(pattern, text) if part]
+
+
+def _clone_run_shell(run_element):
+    new_run = OxmlElement("w:r")
+    for attribute, value in run_element.attrib.items():
+        new_run.set(attribute, value)
+    rpr = run_element.find(qn("w:rPr"))
+    if rpr is not None:
+        new_run.append(deepcopy(rpr))
+    return new_run
+
+
+def _clone_text_element(text_element, text):
+    clone = deepcopy(text_element)
+    clone.text = text
+    if text[:1].isspace() or text[-1:].isspace():
+        clone.set(_XML_SPACE, "preserve")
+    else:
+        clone.attrib.pop(_XML_SPACE, None)
+    return clone
+
+
+def _split_run_around_characters(run, target_chars, font_name, *, east_asian_hint=False):
+    """Split target characters into punctuation-only runs and style them."""
+    text = run.text
+    if not text or not any(char in target_chars for char in text):
+        return False
+
+    if all(char in target_chars for char in text):
+        already_formatted = _run_has_only_font(run, font_name)
+        if east_asian_hint:
+            rpr = run._element.rPr
+            rfonts = rpr.rFonts if rpr is not None else None
+            already_formatted = (
+                already_formatted
+                and rfonts is not None
+                and rfonts.get(qn("w:hint")) == "eastAsia"
+            )
+        if already_formatted:
+            return False
+        _set_run_font_slots(run, font_name, east_asian_hint=east_asian_hint)
+        return True
+
+    original_r = run._r
+    parent = original_r.getparent()
+    if parent is None:
+        return False
+
+    split_runs = []
+    for child in original_r:
+        if child.tag == qn("w:rPr"):
+            continue
+        if child.tag == qn("w:t") and any(char in target_chars for char in (child.text or "")):
+            for part in _split_character_parts(child.text or "", target_chars):
+                new_r = _clone_run_shell(original_r)
+                new_r.append(_clone_text_element(child, part))
+                split_runs.append((new_r, all(char in target_chars for char in part)))
+        else:
+            new_r = _clone_run_shell(original_r)
+            new_r.append(deepcopy(child))
+            split_runs.append((new_r, False))
+
+    if not split_runs:
+        return False
+
+    insertion_index = parent.index(original_r)
+    for offset, (new_r, is_target) in enumerate(split_runs):
+        parent.insert(insertion_index + offset, new_r)
+        if is_target:
+            _set_run_font_slots(
+                Run(new_r, run._parent),
+                font_name,
+                east_asian_hint=east_asian_hint,
+            )
+    parent.remove(original_r)
+
+    return True
+
+
+def _contextual_east_asian_font(runs, index):
+    """Find the Chinese font at a run's position, preferring the run itself."""
+    own_font = _run_east_asian_font(runs[index])
+    if own_font:
+        return own_font
+
+    for distance in range(1, len(runs)):
+        for candidate_index in (index - distance, index + distance):
+            if 0 <= candidate_index < len(runs):
+                candidate = _run_east_asian_font(runs[candidate_index])
+                if candidate:
+                    return candidate
+    return None
+
+
+def normalize_chinese_quote_fonts(para, font_cn=None):
+    """Use the contextual Chinese font for curly Chinese quotation marks.
+
+    Quote characters are isolated before their font is changed so adjacent
+    English letters and Arabic digits retain the paragraph's Latin font.
+    When ``font_cn`` is omitted (for punctuation-only processing), the font is
+    inferred from the quote's run or its nearest formatted run.
+    """
+    changed = False
+    runs = iter_paragraph_runs(para)
+    for index, run in enumerate(runs):
+        if not any(char in CHINESE_QUOTE_CHARS for char in run.text):
+            continue
+        contextual_font = font_cn or _contextual_east_asian_font(runs, index)
+        if contextual_font and _split_run_around_characters(
+            run,
+            CHINESE_QUOTE_CHARS,
+            contextual_font,
+            east_asian_hint=True,
+        ):
+            changed = True
+    return changed
+
+
 def middle_dot_run_has_required_font(run):
     """Return whether a run that contains · already uses the required font."""
     values = _run_font_values(run)
@@ -284,53 +471,22 @@ def middle_dot_run_has_required_font(run):
 
 
 def _set_middle_dot_font(run):
-    run.font.name = MIDDLE_DOT_FONT_CN
-    rpr = run._r.get_or_add_rPr()
-    rfonts = rpr.find(qn("w:rFonts"))
-    if rfonts is None:
-        rfonts = OxmlElement("w:rFonts")
-        rpr.insert(0, rfonts)
-    for attr in ("eastAsia", "ascii", "hAnsi", "cs"):
-        rfonts.set(qn("w:" + attr), MIDDLE_DOT_FONT_CN)
+    _set_run_font_slots(run, MIDDLE_DOT_FONT_CN, east_asian_hint=True)
 
 
 def _split_run_around_middle_dot(run):
-    text = run.text
-    if MIDDLE_DOT not in text:
-        return False
-
-    parts = [part for part in re.split(f"({re.escape(MIDDLE_DOT)})", text) if part]
-    if len(parts) == 1:
-        if not middle_dot_run_has_required_font(run):
-            _set_middle_dot_font(run)
-            return True
-        return False
-
-    original_r = deepcopy(run._r)
-    current_r = run._r
-    current_run = run
-    changed = True
-
-    for index, part in enumerate(parts):
-        if index == 0:
-            current_run.text = part
-        else:
-            new_r = deepcopy(original_r)
-            current_r.addnext(new_r)
-            current_r = new_r
-            current_run = Run(new_r, run._parent)
-            current_run.text = part
-
-        if part == MIDDLE_DOT:
-            _set_middle_dot_font(current_run)
-
-    return changed
+    return _split_run_around_characters(
+        run,
+        {MIDDLE_DOT},
+        MIDDLE_DOT_FONT_CN,
+        east_asian_hint=True,
+    )
 
 
 def normalize_middle_dot_fonts(para):
     """Set every · character to 方正仿宋_GBK while preserving surrounding runs."""
     changed = False
-    for run in list(para.runs):
+    for run in iter_paragraph_runs(para):
         if _split_run_around_middle_dot(run):
             changed = True
     return changed
@@ -411,6 +567,9 @@ def process_paragraph(para, space_mode='remove_all'):
 
     # 空格处理
     if process_spaces(para, space_mode):
+        changed = True
+
+    if normalize_chinese_quote_fonts(para):
         changed = True
 
     if normalize_middle_dot_fonts(para):
