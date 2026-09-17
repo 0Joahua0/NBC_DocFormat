@@ -1,8 +1,26 @@
 #!/usr/bin/env python3
-"""
-标点符号修复 v5
-- 修复引号处理bug：使用明确的Unicode转义序列
-- 正确处理省略号和句号
+"""中文标点修复与特殊字符字体归一化。
+
+这个模块同时处理两个层次的问题：
+
+1. **纯文本层**：把英文标点转换为适合中文公文的标点，并对整段引号做成对
+   判断。引号必须按整段判断，因为一对引号可能被 Word 拆进不同的 ``run``。
+2. **OOXML 层**：只把中文引号和中点拆成独立 ``run``，再设置它们的字体。
+   这样同一原始 ``run`` 中的英文和数字仍可继续使用 Times New Roman。
+
+理解本文件前需要知道：Word 的一段文字由若干 ``w:r``（run）组成，一个 run
+不仅可能包含 ``w:t`` 文本，还可能包含图片、域、换行等非文本节点。因此这里
+不能简单地用 ``paragraph.text = ...`` 重建段落；拆分时必须逐个复制 XML 子节点，
+否则会丢失超链接、图片、域代码或修订记录。
+
+对外主要入口：
+
+``process_paragraph``
+    修复一个段落的标点、空格和特殊字符字体。
+``process_document``
+    命令行使用的整篇文档入口。
+``normalize_chinese_quote_fonts`` / ``normalize_middle_dot_fonts``
+    由格式化器复用的字体归一化函数。
 """
 
 import re
@@ -48,7 +66,12 @@ _XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
 
 
 def _protect_special_patterns(text):
-    """提取并保护不应被替换的特殊模式，返回 (处理后文本, 保护列表)"""
+    """临时隐藏不应中文化的片段，返回 ``(占位文本, 恢复表)``。
+
+    例如时间 ``9:30``、URL 中的冒号和标准号 ``ISO 9001:2015`` 都不能被
+    全角化。占位符使用控制字符包围，正常用户文本几乎不可能与其冲突；全部
+    标点规则执行完后再由 :func:`_restore_protected` 原样放回。
+    """
     protected = []
     counter = [0]
 
@@ -94,7 +117,12 @@ def has_chinese(text):
 
 
 def fix_text(text):
-    """修复文本中的标点"""
+    """纯字符串入口：按固定流水线修复一段文本。
+
+    顺序不能随意调整：省略号必须早于单句号，破折号必须早于普通替换，成对
+    引号放在最后处理。引号算法按出现次序交替左右引号，并不做语法或嵌套分析；
+    若引号总数为奇数，最后一个会按左引号处理。
+    """
     if not text:
         return text
 
@@ -110,6 +138,8 @@ def fix_text(text):
     result = re.sub(r"—(?!—)", "——", result)
 
     # ===== 第三步：基本标点替换（只在有中文的文本中）=====
+    # has_chinese 是整段开关：一旦段内含中文，映射表中的半角标点都会转换；
+    # URL、时间等例外已在上面用占位符保护。
     if has_chinese(result):
         for en, cn in REPLACEMENTS.items():
             result = result.replace(en, cn)
@@ -184,7 +214,11 @@ def fix_text(text):
 
 
 def _fix_simple_punctuation(text):
-    """只做不涉及配对的简单标点替换，保留引号不动"""
+    """只做不依赖跨 run 上下文的标点替换，故意保留引号不动。
+
+    文档入口会对每个 run 调用本函数，尽可能保留原有格式边界；引号随后拼接
+    整段再配对，因为左、右引号可能被 Word 拆在不同 run 中。
+    """
     if not text:
         return text
 
@@ -217,7 +251,7 @@ def _fix_simple_punctuation(text):
 
 
 def _fix_quotes_whole_text(text):
-    """对完整文本做引号配对替换"""
+    """按出现次序把整段中的单双引号交替转换为左、右中文弯引号。"""
     result = text
 
     # 双引号
@@ -254,7 +288,13 @@ def _fix_quotes_whole_text(text):
 
 
 def _redistribute_text_to_runs(runs, new_full_text):
-    """将新的完整文本按原 run 的长度边界重新分配回各 run，保留格式"""
+    """按原长度边界把整段新文本分回各个 run，尽量保留原格式。
+
+    普通的全角/半角替换不会改变字符数，因此可以安全地沿用原 run 边界。
+    只有省略号等极少数规则会改变长度；这时已无法唯一推断每个新字符原来属于
+    哪个 run，只能把结果放入首个 run。需要保留复杂 XML 的场景应使用下面的
+    ``_split_run_around_characters``，而不是调用本函数重建内容。
+    """
     run_lengths = [len(run.text) for run in runs]
 
     # 如果长度一致（只是字符替换，没有增删），直接按原长度切分
@@ -272,6 +312,7 @@ def _redistribute_text_to_runs(runs, new_full_text):
 
 
 def _run_font_values(run):
+    """读取 run 上所有显式字体名，用于判断特殊字符是否已经规范化。"""
     values = []
     if run.font.name:
         values.append(run.font.name)
@@ -285,6 +326,7 @@ def _run_font_values(run):
 
 
 def _run_east_asian_font(run):
+    """读取 OOXML 的 ``w:eastAsia`` 字体槽；未显式设置时返回 ``None``。"""
     rpr = run._element.rPr
     if rpr is None or rpr.rFonts is None:
         return None
@@ -292,12 +334,19 @@ def _run_east_asian_font(run):
 
 
 def _set_run_font_slots(run, font_name, *, east_asian_hint=False):
-    """Set every font slot for a punctuation-only run.
+    """为“只含目标标点”的 run 写入全部字体槽。
 
-    Chinese quotation marks are classified as high-ANSI by Word unless the
-    run carries an East Asian hint.  The caller splits punctuation away from
-    Latin letters and digits first, so changing all slots here cannot affect
-    the Times New Roman formatting required for those characters.
+    ``python-docx`` 的 ``run.font.name`` 主要覆盖西文字体，并不足以决定中文
+    字符实际显示的字体。Word 会在四个 OOXML 字体槽之间选择：
+
+    - ``eastAsia``：中日韩字符；
+    - ``ascii``：ASCII 英文和数字；
+    - ``hAnsi``：高位 ANSI 字符，弯引号经常被 Word 归到这里；
+    - ``cs``：复杂文字脚本。
+
+    中文弯引号即使视觉上是中文标点，也可能因为 ``hAnsi`` 槽而显示成 Times
+    New Roman，所以还要写入 ``w:hint="eastAsia"``。调用本函数前，目标标点
+    已被拆成独立 run，因此覆盖四个槽不会影响相邻英文和数字的西文字体。
     """
     run.font.name = font_name
     rpr = run._r.get_or_add_rPr()
@@ -322,12 +371,12 @@ def _run_has_only_font(run, font_name):
 
 
 def _iter_run_elements(container):
-    """Yield textual runs below a paragraph, including wrapped runs.
+    """按文档顺序遍历段落内的 run，包括被包装的 run。
 
-    Hyperlinks, content controls, and tracked revisions can wrap ``w:r``
-    elements, so ``Paragraph.runs`` alone is incomplete.  Nested paragraphs
-    (for example inside a drawing's text box) are separate stories and must
-    not be attributed to the outer paragraph.
+    ``Paragraph.runs`` 只返回段落的直接子 run；超链接 ``w:hyperlink``、内容
+    控件 ``w:sdt`` 和修订 ``w:ins`` 等节点内部的 run 会被漏掉。本函数递归这些
+    包装节点，但遇到嵌套 ``w:p`` 就停止，因为文本框内的新段落属于另一条文档
+    story，不能算作外层段落的一部分。
     """
     for child in container:
         if child.tag == qn("w:p"):
@@ -339,16 +388,18 @@ def _iter_run_elements(container):
 
 
 def iter_paragraph_runs(para):
-    """Return direct and wrapped runs in document order for one paragraph."""
+    """返回一个段落的全部直接/包装 run，并转换成 python-docx ``Run``。"""
     return [Run(run_element, para) for run_element in _iter_run_elements(para._p)]
 
 
 def _split_character_parts(text, target_chars):
+    """把文本切成“目标字符”和“普通文本”交替出现的非空片段。"""
     pattern = "(" + "|".join(re.escape(char) for char in sorted(target_chars)) + ")"
     return [part for part in re.split(pattern, text) if part]
 
 
 def _clone_run_shell(run_element):
+    """复制 run 的属性和 ``w:rPr``，暂不复制实际内容节点。"""
     new_run = OxmlElement("w:r")
     for attribute, value in run_element.attrib.items():
         new_run.set(attribute, value)
@@ -359,6 +410,7 @@ def _clone_run_shell(run_element):
 
 
 def _clone_text_element(text_element, text):
+    """复制一个 ``w:t`` 并替换文本，同时维护 XML 空格保留标记。"""
     clone = deepcopy(text_element)
     clone.text = text
     if text[:1].isspace() or text[-1:].isspace():
@@ -369,7 +421,18 @@ def _clone_text_element(text_element, text):
 
 
 def _split_run_around_characters(run, target_chars, font_name, *, east_asian_hint=False):
-    """Split target characters into punctuation-only runs and style them."""
+    """把目标字符隔离成独立 run，设置字体，并保留原 run 的其他 XML。
+
+    算法要点：
+
+    1. 如果 run 全部由目标字符组成，直接改字体即可；
+    2. 否则逐个处理原 run 的子节点；只有 ``w:t`` 文本节点会被切分；
+    3. 图片、域代码、制表符、换行等非文本子节点整体深拷贝，绝不转成字符串；
+    4. 新 run 继承原 ``w:rPr``，只有目标字符片段再覆盖字体；
+    5. 所有新 run 就位后才删除原 run，保持原来的文档顺序。
+
+    返回值表示 XML 是否发生改变，便于上层统计和保持幂等性。
+    """
     text = run.text
     if not text or not any(char in target_chars for char in text):
         return False
@@ -394,6 +457,8 @@ def _split_run_around_characters(run, target_chars, font_name, *, east_asian_hin
     if parent is None:
         return False
 
+    # 先在内存中组装替代 run；全部成功后再一次性替换，避免处理中途留下
+    # 半成品 XML。
     split_runs = []
     for child in original_r:
         if child.tag == qn("w:rPr"):
@@ -426,7 +491,12 @@ def _split_run_around_characters(run, target_chars, font_name, *, east_asian_hin
 
 
 def _contextual_east_asian_font(runs, index):
-    """Find the Chinese font at a run's position, preferring the run itself."""
+    """推断某个 run 所在位置应使用的中文字体。
+
+    优先读取 run 自己的 ``eastAsia`` 槽；若该 run 只含标点而没有显式字体，
+    就从左右两侧按距离由近到远查找。这样独立标点 run 仍会继承其所在标题、
+    正文或各级标题的中文字体，而不是使用一个全局固定字体。
+    """
     own_font = _run_east_asian_font(runs[index])
     if own_font:
         return own_font
@@ -441,12 +511,11 @@ def _contextual_east_asian_font(runs, index):
 
 
 def normalize_chinese_quote_fonts(para, font_cn=None):
-    """Use the contextual Chinese font for curly Chinese quotation marks.
+    """让中文弯引号使用其所在位置的中文字体。
 
-    Quote characters are isolated before their font is changed so adjacent
-    English letters and Arabic digits retain the paragraph's Latin font.
-    When ``font_cn`` is omitted (for punctuation-only processing), the font is
-    inferred from the quote's run or its nearest formatted run.
+    先隔离引号、后改字体，确保相邻英文和阿拉伯数字仍使用段落的西文字体。
+    格式化阶段会显式传入 ``font_cn``；仅修复标点时没有预设上下文，就从引号
+    自身或最近 run 的 ``eastAsia`` 槽推断。
     """
     changed = False
     runs = iter_paragraph_runs(para)
@@ -465,7 +534,7 @@ def normalize_chinese_quote_fonts(para, font_cn=None):
 
 
 def middle_dot_run_has_required_font(run):
-    """Return whether a run that contains · already uses the required font."""
+    """检查含 ``·`` 的 run 上已显式声明的字体名是否都属于允许字体。"""
     values = _run_font_values(run)
     return bool(values) and all(value in MIDDLE_DOT_ALLOWED_FONTS for value in values)
 
@@ -484,7 +553,7 @@ def _split_run_around_middle_dot(run):
 
 
 def normalize_middle_dot_fonts(para):
-    """Set every · character to 方正仿宋_GBK while preserving surrounding runs."""
+    """把每个 U+00B7 ``·`` 设为方正仿宋_GBK，并保留周围 run 内容。"""
     changed = False
     for run in iter_paragraph_runs(para):
         if _split_run_around_middle_dot(run):
@@ -493,7 +562,12 @@ def normalize_middle_dot_fonts(para):
 
 
 def _process_spaces_text(text, mode):
-    """根据 mode 处理文本中的空格，返回处理后的文本"""
+    """按空格策略返回新文本。
+
+    ``keep_all`` 完全保留；``remove_all`` 删除半角与全角空格；
+    ``keep_en_boundary`` 删除汉字之间的空格，并把“汉字 ↔ ASCII 英文/数字”
+    边界统一成一个空格。中文范围覆盖基本区、扩展 A 和兼容区。
+    """
     if mode == 'keep_all' or not text:
         return text
     if mode == 'remove_all':
@@ -524,7 +598,12 @@ def _process_spaces_text(text, mode):
 
 
 def process_spaces(para, mode='remove_all'):
-    """处理段落内空格，返回 True 表示有改动"""
+    """处理段落内空格，返回是否有改动。
+
+    这里使用 python-docx 的直接 ``para.runs``；超链接等包装节点中的文本不会
+    被纳入空格重分配。长度变化时还会触发 ``_redistribute_text_to_runs`` 的
+    有损回退，维护者应避免在此加入会大幅改变字符数的规则。
+    """
     if mode == 'keep_all':
         return False
     full_text = para.text
@@ -538,7 +617,12 @@ def process_spaces(para, mode='remove_all'):
 
 
 def process_paragraph(para, space_mode='remove_all'):
-    """处理段落 - 简单替换按 run 做（保留格式），引号配对跨 run 做"""
+    """完成一个段落的标点、空格和特殊字符字体处理。
+
+    执行顺序是有意设计的：先逐 run 做不依赖上下文的替换，以保留各 run 格式；
+    再把整段文本拼起来配对引号；随后处理空格；最后才隔离引号和中点并设置
+    字体。字体归一化放在末尾，可避免前面的文本重分配再次覆盖新建的 run。
+    """
     full_text = para.text
     if not full_text.strip():
         return False
@@ -579,7 +663,12 @@ def process_paragraph(para, space_mode='remove_all'):
 
 
 def process_document(input_path, output_path):
-    """处理文档"""
+    """读取、处理并保存一篇 DOCX，供命令行脚本直接调用。
+
+    GUI 的“智能处理”会调用更完整的调度链；这里保留为独立标点修复入口。
+    ``Document.paragraphs`` 不包含表格单元格段落，因此正文和顶层表格需要分别
+    遍历。字符替换不递归页眉、页脚和文本框；最后的中文换行规则覆盖范围更广。
+    """
     print(f"Reading: {input_path}")
     doc = Document(input_path)
 

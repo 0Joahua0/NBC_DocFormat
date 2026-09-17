@@ -1,3 +1,14 @@
+"""通过 Windows COM 在旧版文档格式与 DOCX 之间转换。
+
+python-docx 只能可靠读写 ``.docx``，不能直接处理二进制 ``.doc`` 或 WPS
+``.wps``。GUI 因此先调用本模块把旧格式转换成临时 DOCX，完成标点和版式处理
+后，再按用户要求转换回原格式。
+
+COM 对象与普通 Python 对象不同：每个工作线程都必须独立
+``CoInitialize/CoUninitialize``，文档和应用也必须在 ``finally`` 中关闭；否则
+后台可能残留 WINWORD/WPS 进程并锁住文件。
+"""
+
 import os
 import time
 import tempfile
@@ -5,12 +16,13 @@ from pathlib import Path
 
 
 def _ensure_windows():
+    """COM 自动化仅在 Windows 可用；其他平台尽早给出明确错误。"""
     if os.name != 'nt':
         raise RuntimeError("当前系统不支持 COM 转换，请在 Windows 上运行")
 
 
 def _safe_quit(app):
-    """安全退出 COM 应用，兼容 Word 和 WPS"""
+    """尽力退出 Word/WPS COM 应用，清理阶段不覆盖原始异常。"""
     if app is None:
         return
     try:
@@ -21,7 +33,7 @@ def _safe_quit(app):
 
 
 def _safe_close(doc):
-    """安全关闭文档"""
+    """不保存地关闭 COM 文档，清理阶段失败时保持静默。"""
     if doc is None:
         return
     try:
@@ -31,7 +43,12 @@ def _safe_close(doc):
 
 
 def _create_app(prog_id):
-    """创建 COM 应用实例"""
+    """创建不可见、无交互提示的 Office/WPS COM 实例。
+
+    优先用 ``DispatchEx`` 请求新的 COM 自动化实例，失败时再回退 ``Dispatch``；
+    COM 服务器是否为新实例分配独立 OS 进程由 Office/WPS 自己决定。部分 WPS
+    版本并不完整实现所有 Word COM 属性，所以属性赋值需容错。
+    """
     import win32com.client
 
     try:
@@ -53,8 +70,11 @@ def _create_app(prog_id):
 
 def _detect_all_apps():
     """
-    检测系统中所有可用的 Office 应用。
+    依次探测系统中所有可用的 Office/WPS COM ProgID。
     返回列表：[(prog_id, name), ...]
+
+    每个候选都实际创建并退出一次，而不是只查注册表，因为“已注册”不等于
+    自动化组件当前可启动。
     """
     _ensure_windows()
     import pythoncom
@@ -107,8 +127,10 @@ def detect_office_app(prefer_wps=False):
 
 
 def convert_to_docx(input_path, output_path=None):
-    """
-    将 .doc/.wps 转换为 .docx
+    """把 ``.doc``/``.wps`` 转为 ``.docx`` 并返回实际输出路径。
+
+    未给 ``output_path`` 时创建一个调用方负责删除的临时文件。Word COM 的
+    ``FileFormat=16`` 表示 Office Open XML Document，即普通 ``.docx``。
     """
     _ensure_windows()
     try:
@@ -131,6 +153,7 @@ def convert_to_docx(input_path, output_path=None):
     if not prog_id:
         raise RuntimeError("未检测到 WPS 或 Microsoft Office，无法转换 .doc/.wps 文件")
 
+    # COM 初始化、文档关闭、应用退出必须位于同一工作线程并成对执行。
     app = None
     doc = None
     pythoncom.CoInitialize()
@@ -154,7 +177,11 @@ def convert_from_docx(input_path, output_path, format='doc'):
     - format='wps' → 专门尝试用 WPS 保存；如果 WPS 不可用，回退为 .doc
 
     Returns:
-        str: 实际输出的文件路径（如果回退了格式，路径后缀会变）
+        str: 实际输出的文件路径（如果回退了格式，路径后缀会变）。
+
+    ``FileFormat=0`` 是旧版 Word 文档格式；WPS 根据扩展名决定保存为 ``.wps``
+    还是 ``.doc``。只有 Microsoft Word 时不能真正生成 WPS 文件，因此明确改用
+    ``.doc`` 后缀，避免内容与扩展名不一致。
     """
     _ensure_windows()
     try:

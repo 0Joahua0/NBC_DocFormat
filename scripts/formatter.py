@@ -1,24 +1,30 @@
 #!/usr/bin/env python3
-"""
-文档格式统一 v5
-修复问题：
-- 标题检测更全面
-- 主送机关顶格
-- 落款右对齐
-- 清除斜体、下划线、颜色
-- 特殊段落处理（附件、特此说明等）
+"""DOCX 版式识别与格式化核心。
 
-公文标准：
-- 页边距：上37mm，下35mm，左28mm，右26mm
-- 主标题：居中，二号（22pt），方正小标宋简体
-- 主送机关：顶格，三号仿宋
-- 正文：三号仿宋GB2312，首行缩进2字符，行距28磅
-- 一级标题："一、" 三号黑体，首行缩进2字符
-- 二级标题："（一）" 三号楷体GB2312，首行缩进2字符
-- 三级标题："1." 三号仿宋GB2312，首行缩进2字符
-- 四级标题："（1）" 三号仿宋GB2312，首行缩进2字符
-- 落款：右对齐，三号仿宋
-- 附件：顶格，三号仿宋
+本模块不是简单地“给所有段落套一种字体”，而是一条有顺序依赖的流水线：
+
+``预设合并与平台字体适配``
+    ↓
+``页面设置、结构空行与附件分页``
+    ↓
+``按上下文识别标题/正文/落款等段落类型``
+    ↓
+``设置段落属性和 run 字体``
+    ↓
+``表格、页码、脚注、中文换行规则``
+    ↓
+``保存 DOCX``
+
+代码同时使用 python-docx 的高级对象（``Document``、``Paragraph``、``Run``）
+和底层 WordprocessingML。高级 API 适合普通段落属性；脚注、复杂页码域、字体槽、
+嵌套表格和修订属性则需要直接操作 ``w:*`` XML。
+
+最值得从这里开始阅读的函数：
+
+- :func:`format_document`：整篇文档的总调度器；
+- :func:`detect_para_type`：有优先级的段落启发式分类器；
+- :func:`format_paragraph`：单段版式算法；
+- :func:`set_font`：中文/西文字体槽的实际写入逻辑。
 """
 
 import sys
@@ -345,7 +351,12 @@ def _coerce_number(value, fallback):
 
 
 def _resolve_line_spacing(fmt, fallback_value=28, fallback_type='exact'):
-    """Return (type, value) for exact-point or multiple line spacing."""
+    """把新旧配置统一解析为 ``(行距类型, 行距值)``。
+
+    历史配置没有 ``line_spacing_type``：当 ``line_spacing`` 为空时，旧语义是
+    1.5 倍行距；有数字时则表示固定磅值。新配置显式使用 ``exact`` 或
+    ``multiple``，因此这里集中完成兼容，后续代码不再区分配置版本。
+    """
     sentinel = object()
     fmt = fmt or {}
     raw_value = fmt.get('line_spacing', sentinel)
@@ -368,6 +379,11 @@ def _resolve_line_spacing(fmt, fallback_value=28, fallback_type='exact'):
 
 
 def _apply_line_spacing(paragraph_format, fmt, fallback_value=28, fallback_type='exact'):
+    """把解析后的行距写入 python-docx 段落格式对象。
+
+    倍数行距直接使用浮点倍数；固定行距必须包装为 ``Pt``，否则 python-docx
+    会把普通数字解释成另一种单位。
+    """
     spacing_type, value = _resolve_line_spacing(fmt, fallback_value, fallback_type)
     if spacing_type == 'multiple':
         paragraph_format.line_spacing = value
@@ -378,6 +394,12 @@ def _apply_line_spacing(paragraph_format, fmt, fallback_value=28, fallback_type=
 
 
 def _set_footnote_run_properties(rpr, fmt):
+    """向一个脚注 ``w:rPr`` 写入字体、字号和粗体属性。
+
+    ``w:sz`` 与 ``w:szCs`` 的单位是半磅，所以 12pt 需要写成 ``24``。
+    同时写 ``eastAsia`` 和西文字体槽，保证脚注中的中文、英文和数字分别使用
+    预设字体。本函数接收底层 XML 节点，因为 python-docx 没有完整脚注 API。
+    """
     font_cn = fmt.get('font_cn', '方正仿宋_GBK')
     font_en = fmt.get('font_en', 'Times New Roman')
     size_half_points = str(int(round(_coerce_number(fmt.get('size'), 12) * 2)))
@@ -409,7 +431,18 @@ def _set_footnote_run_properties(rpr, fmt):
 
 
 def _format_footnotes(doc, fmt):
-    """Apply preset typography to real Word footnotes, if the document has any."""
+    """直接修改 ``/word/footnotes.xml``，为真实 Word 脚注应用预设。
+
+    处理步骤：定位脚注 part → 解析 XML → 跳过分隔线伪脚注 → 设置每个脚注
+    段落及 run 的属性 → 处理引号/中点字体 → 序列化回 package part。
+
+    OOXML 单位容易混淆：段前/段后和固定行距用 1/20 磅；当
+    ``w:lineRule="auto"`` 时，``w:line`` 使用 1/240 行。``w:pPr/w:rPr`` 表示
+    段落标记的字符属性；每个 ``w:r/w:rPr`` 也显式写入，避免原脚注局部格式
+    覆盖预设。
+
+    返回实际处理的脚注数量；没有脚注 part 或没有脚注配置时返回 0。
+    """
     if not fmt:
         return 0
 
@@ -425,6 +458,7 @@ def _format_footnotes(doc, fmt):
     formatted = 0
 
     for footnote in root.findall(qn('w:footnote')):
+        # 这两类节点画脚注分隔线，不是用户正文，不能套用文本字体。
         if footnote.get(qn('w:type')) in ('separator', 'continuationSeparator'):
             continue
         paragraphs = list(footnote.iter(qn('w:p')))
@@ -474,6 +508,11 @@ def _format_footnotes(doc, fmt):
     return formatted
 
 
+# 预设 schema（各段落类型共用）：
+# - font_cn / font_en：中文与西文字体；size、indent、space_* 的单位均为磅；
+# - align：left/right/center/justify；
+# - line_spacing_type：exact 表示固定磅值，multiple 表示倍数。
+# 页面边距与页眉页脚距离使用厘米。具体预设只列数据，格式算法集中在下方函数。
 PRESETS = {
     'official': {
         'name': '公文格式',
@@ -734,7 +773,12 @@ def remove_background(doc):
 
 
 def _iter_block_items(doc):
-    """Yield paragraphs and tables in document order."""
+    """按正文 XML 中的真实顺序产出段落和顶层表格。
+
+    ``Document.paragraphs`` 与 ``Document.tables`` 是两个彼此独立的列表，无法
+    判断某张表究竟位于哪两个段落之间。表格前后插入空行时必须遍历
+    ``document.xml`` 的子节点顺序。
+    """
     body = doc.element.body
     for child in body.iterchildren():
         if child.tag.endswith('}p'):
@@ -744,7 +788,12 @@ def _iter_block_items(doc):
 
 
 def _iter_nested_tables(table):
-    """Yield tables nested inside ``table`` exactly once, depth first."""
+    """深度优先遍历 ``table`` 内的嵌套表格，并保证每个底层节点只返回一次。
+
+    python-docx 的 ``Document.tables`` 只公开顶层表格；此外，合并单元格会让
+    ``row.cells`` 的多个位置指向同一个 ``w:tc``。因此这里分别按 ``_tc`` 和
+    ``_tbl`` 的对象身份去重，既避免漏掉嵌套表格，也避免重复格式化。
+    """
     seen_cells = set()
     seen_tables = set()
 
@@ -775,7 +824,11 @@ def _format_nested_table_typography(
     bold=False,
     header_bold=False,
 ):
-    """Apply table typography to nested tables omitted by ``Document.tables``."""
+    """为 ``Document.tables`` 看不到的嵌套表格补做字体归一化。
+
+    顶层表格的布局在主流程中处理；这里故意只补字体、引号和中点，避免嵌套
+    表格再次触发表格前后空行、列宽等结构性修改。
+    """
     seen_cells = set()
     for row_index, row in enumerate(table.rows):
         for cell in row.cells:
@@ -882,6 +935,7 @@ def _set_table_indent(table, indent_twips=0):
 
 
 def _text_weight(text):
+    """估算文本视觉宽度：ASCII 约占半个汉字，其他字符约占一个汉字。"""
     weight = 0.0
     for ch in text:
         if ord(ch) < 128:
@@ -892,6 +946,11 @@ def _text_weight(text):
 
 
 def _normalize_pcts(weights, min_pct, max_pct):
+    """把列权重归一化，按软上下限截断一次，再缩放到总和 100。
+
+    最后的整体缩放可能让个别列略微越过 ``min_pct/max_pct``，所以这两个参数
+    是抑制极端列宽的软约束，而不是数学上的最终硬边界。
+    """
     total = sum(weights) or 1.0
     pcts = [w / total * 100 for w in weights]
 
@@ -910,6 +969,12 @@ def _normalize_pcts(weights, min_pct, max_pct):
 
 
 def _set_table_col_widths_by_content(table, min_pct=8, max_pct=45):
+    """根据每列最长内容估算列宽，并同步写入表格网格与单元格宽度。
+
+    每列取所有单元格中的最大视觉权重，再经过软上下限约束。该算法追求稳定
+    和可读性，并不是排版引擎的精确测量；Word/WPS 最终仍可能根据页面宽度
+    微调。
+    """
     if not table.rows:
         return
     col_count = max(len(row.cells) for row in table.rows)
@@ -937,7 +1002,10 @@ def _set_table_col_widths_by_content(table, min_pct=8, max_pct=45):
 
     for pct in pcts:
         grid_col = OxmlElement('w:gridCol')
-        grid_col.set(qn('w:w'), str(int(pct * 50)))  # pct in 1/50th %
+        # w:gridCol/@w:w 的单位是 twip(dxa)，没有 pct 类型。这里把各列比例
+        # 映射到总计 5000 twip 的物理网格提示；真正的百分比宽度写在下面的
+        # w:tcW(type="pct")，其数值单位才是 1/50%。
+        grid_col.set(qn('w:w'), str(int(pct * 50)))
         tbl_grid.append(grid_col)
 
     for row in table.rows:
@@ -1092,7 +1160,12 @@ def _standardize_date_text(text):
 
 
 def _build_text_context(doc):
-    """Collect non-empty paragraph texts and map document indexes to text indexes."""
+    """建立段落分类需要的“非空文本序列”和索引映射。
+
+    ``doc.paragraphs`` 的物理索引包含空段，不能可靠表示“标题区前 5 段”或
+    “文档最后三分之一”。返回的映射把物理段落索引转换成非空段落序号，使
+    标题、日期和落款判断不受文档开头/中间空行影响。
+    """
     all_texts = []
     all_texts_idx_map = {}
     for i, para in enumerate(doc.paragraphs):
@@ -1104,31 +1177,38 @@ def _build_text_context(doc):
 
 
 def _xml_has_media(xml):
+    """用 OOXML 标记快速判断节点是否包含图片、VML 或嵌入对象。"""
     return any(marker in (xml or '') for marker in (
         '<w:drawing', '<w:pict', '<w:object', '<mc:AlternateContent', '<v:shape',
     ))
 
 
 def _run_has_media(run):
+    """判断 run 是否承载图片/OLE 等不能当普通文本重建的对象。"""
     return _xml_has_media(getattr(run._r, 'xml', ''))
 
 
 def _paragraph_has_media(para):
+    """判断段落任意层级是否包含媒体对象。"""
     return _xml_has_media(getattr(para._p, 'xml', ''))
 
 
 def _paragraph_text(para):
-    """Return text from direct and wrapped runs across python-docx versions."""
+    """拼接直接和包装 run 的文字，兼容超链接、内容控件与修订节点。"""
     return ''.join(run.text for run in iter_paragraph_runs(para))
 
 
 def _paragraph_has_wrapped_runs(para):
-    """Return whether runs are nested in hyperlinks, revisions, or controls."""
+    """检查是否有 run 位于超链接、修订或内容控件等包装节点内。
+
+    对这种段落不能通过删除 ``para.runs`` 再重建来实现局部加粗，否则会破坏
+    包装关系和关联属性。
+    """
     return any(run._r.getparent() is not para._p for run in iter_paragraph_runs(para))
 
 
 def _set_media_paragraph_single_spacing(para):
-    """Avoid clipping inline or floating media with exact text line spacing."""
+    """媒体段落强制单倍行距，避免固定 28 磅等文本行距裁切图片/OLE。"""
     if not _paragraph_has_media(para):
         return False
     para.paragraph_format.line_spacing = 1.0
@@ -1161,6 +1241,11 @@ def _looks_like_attachment_document_title(text, alignment=None):
 
 
 def _attachment_document_title_ids(doc):
+    """找出“附件N”标记之后的附件正文标题段落。
+
+    “附件N”本身是附件标记，紧随其后的第一个有效段落才可能是附件文档标题；
+    两者使用不同的版式，因此预扫描后用底层 ``w:p`` 身份记录标题。
+    """
     result = set()
     paragraphs = list(doc.paragraphs)
     for index, para in enumerate(paragraphs):
@@ -1180,7 +1265,11 @@ def _attachment_document_title_ids(doc):
 
 
 def _ensure_attachment_page_starts(doc):
-    """Start standalone attachment markers on a fresh page without duplicates."""
+    """让独立附件标记另起一页，同时避免重复添加分页。
+
+    分页既可能直接放在附件段，也可能位于前一段末尾；两种情况都检查后才设置
+    ``page_break_before``。
+    """
     paragraphs = list(doc.paragraphs)
     for index, para in enumerate(paragraphs):
         if not _is_attachment_page_title(para.text) or index == 0:
@@ -1192,17 +1281,19 @@ def _ensure_attachment_page_starts(doc):
 
 
 def detect_para_type(text, index, total, alignment, all_texts, all_texts_index=None, prev_para_type=None):
-    """
-    检测段落类型
-    返回: 'title', 'recipient', 'heading1', 'heading2', 'heading3', 'heading4', 
-          'body', 'signature', 'date', 'attachment', 'closing'
-    
-    参数:
-        text: 段落文本
-        index: 段落索引
-        total: 总段落数
-        alignment: 原始对齐方式
-        all_texts: 所有非空段落的文本列表，用于上下文判断
+    """用有优先级的启发式规则推断段落语义类型。
+
+    这不是自然语言模型，而是结合公文结构、正则和相邻段落状态的确定性分类器。
+    规则顺序属于算法的一部分：标题续行和文末日期先判断，避免日期被 ``1.``
+    三级标题规则抢走；接着识别各级标题、主送机关、附件、结束语、日期和落款；
+    主标题放在靠后位置，并只允许出现在文档开头区域；其余统一回退为正文。
+
+    ``all_texts_index`` 是忽略空段后的序号，存在时优先用于“开头/文末”判断；
+    ``prev_para_type`` 提供有限的状态上下文，用于标题续行和附件列表延续。
+    这些规则是公文经验规则，遇到非常规结构时保守回退为 ``body``。
+
+    返回 ``title``、``recipient``、``heading1``～``heading4``、``body``、
+    ``signature``、``date``、``attachment``、``closing`` 或 ``empty``。
     """
     text = text.strip()
     if not text:
@@ -1409,7 +1500,12 @@ def detect_para_type(text, index, total, alignment, all_texts, all_texts_index=N
 
 
 def _split_heading_by_punct(paragraph):
-    """Split heading like '（三）xxx：正文' or '（三）xxx。正文' into heading paragraph + body paragraph."""
+    """把“（三）标题：正文”这类混合段拆成标题段和正文段。
+
+    这是有损操作：给 ``paragraph.text`` 赋值会重建文本 run，原有字符级格式、
+    超链接等结构可能丢失。因此该能力在预设中默认关闭，只在用户明确启用
+    ``split_heading_at_punct`` 时执行。
+    """
     text = paragraph.text.strip()
     if not text:
         return False
@@ -1453,11 +1549,10 @@ def _find_paragraph_index(doc, target_para):
 
 
 def _ensure_structural_blank_lines(doc, line_spacing_value=28, line_spacing_type='exact'):
-    """
-    Ensure the standard visible blank lines:
-    - after the title block before recipient/body
-    - before the signature block after the final body paragraph
-    Other empty paragraphs are handled separately.
+    """确保两类有排版意义的空行存在并返回其 XML 身份集合。
+
+    仅保留标题块之后、落款块之前的可见空行；若相邻位置已有空段就复用，避免
+    重复插入。其他空段由 :func:`_format_empty_paragraphs` 压缩处理。
     """
     all_texts, all_texts_idx_map = _build_text_context(doc)
     total_paras = len(doc.paragraphs)
@@ -1502,8 +1597,12 @@ def _ensure_structural_blank_lines(doc, line_spacing_value=28, line_spacing_type
 
 
 def _format_empty_paragraphs(doc, structural_blank_ids, line_spacing_value=28, line_spacing_type='exact'):
-    """v1.7.2: 不再依赖 id()，改用段落 XML 上的持久标记判断。
-    structural_blank_ids 参数保留以维持接口兼容，但不再使用。"""
+    """统一空段高度，同时保留被标记的结构性空行。
+
+    普通空段被压缩为极小高度；结构性空段使用正文行距；含媒体的“空”段则用
+    单倍行距防止对象被裁切。``structural_blank_ids`` 仅为旧调用接口兼容保留，
+    当前实现以段落 XML 上的持久标记为准。
+    """
     for para in doc.paragraphs:
         if para.text.strip():
             continue
@@ -1529,7 +1628,11 @@ def _rev_date():
 
 
 def _add_ppr_change(para, orig_ppr):
-    """将原始段落格式嵌入 <w:pPrChange>，记录改动前状态"""
+    """用 ``w:pPrChange`` 保存修改前的段落属性快照。
+
+    这是“格式修订”，不是文字插入/删除修订。先删除已有 change 节点，避免重复
+    执行时形成嵌套快照；ID 在每篇文档开始时重置，时间戳使用 UTC。
+    """
     pPr = para._p.get_or_add_pPr()
     # 移除已有的 pPrChange，避免重复
     for old in pPr.findall(qn('w:pPrChange')):
@@ -1553,7 +1656,7 @@ def _add_ppr_change(para, orig_ppr):
 
 
 def _add_rpr_change(run, orig_rpr):
-    """将原始字符格式嵌入 <w:rPrChange>，记录改动前状态"""
+    """用 ``w:rPrChange`` 保存修改前的字符属性快照。"""
     rPr = run._r.get_or_add_rPr()
     for old in rPr.findall(qn('w:rPrChange')):
         rPr.remove(old)
@@ -1576,7 +1679,7 @@ def _add_rpr_change(run, orig_rpr):
 
 
 def _set_paragraph_spacing_points(para, before_pt=0, after_pt=0):
-    """Set paragraph spacing in points and clear line-based spacing leftovers."""
+    """以磅写入段前/段后距，并清除可能覆盖它们的行数/自动间距属性。"""
     pf = para.paragraph_format
     pf.space_before = Pt(before_pt)
     pf.space_after = Pt(after_pt)
@@ -1597,7 +1700,7 @@ def _set_paragraph_spacing_points(para, before_pt=0, after_pt=0):
 def _force_normal_style(para):
     """把段落 style 重置为 Normal，避免内置 Heading 样式带来的属性继承。
 
-    v1.7.2: Word 内置 Heading 1~9 / Normal (Web) 等样式自带
+    Word 内置 Heading 1~9 / Normal (Web) 等样式可能自带
     beforeAutospacing/afterAutospacing="1"，会让段前段后无法清零。
     公文格式应走纯 Normal 样式，所有视觉效果通过段落直接属性控制。
     """
@@ -1606,7 +1709,7 @@ def _force_normal_style(para):
         pStyle = pPr.find(qn('w:pStyle'))
         if pStyle is None:
             pStyle = OxmlElement('w:pStyle')
-            # pStyle 必须放在 pPr 的最前面（W3C 规范要求）
+            # WordprocessingML 对 pPr 子元素有顺序要求，pStyle 应位于最前部。
             pPr.insert(0, pStyle)
         pStyle.set(qn('w:val'), 'Normal')
     except Exception:
@@ -1616,11 +1719,12 @@ def _force_normal_style(para):
 def deep_clean_document(doc):
     """深度清洗文档：移除所有段落级用户格式属性，保留文字和结构。
 
-    v1.8.0: 处理复制粘贴的脏数据时，原文带的颜色、字号、缩进、段前段后
+    处理复制粘贴的脏数据时，原文带的颜色、字号、缩进、段前段后
     等用户级格式会干扰 detect_para_type 的启发式判断。本函数把这些
     属性全部清掉，让后续格式化工作在干净的输入上展开。
 
-    注意：本函数不删除文字、不动表格结构。
+    注意：本函数不删除文字、不动表格和媒体结构；字号、粗体等属性会在后续
+    ``set_font`` / ``format_paragraph`` 中重新建立。
     """
 
     def _clean_paragraph(para):
@@ -1685,10 +1789,11 @@ def _compact_empty_paragraph(para):
 
 
 def _format_structural_blank_paragraph(para, line_spacing_value=28, line_spacing_type='exact'):
-    """Format the intentional blank line used between document sections.
+    """格式化章节之间有意保留的空行，并写入工具私有持久标记。
 
-    v1.7.2: 在段落 pPr 上写一个自定义属性 docfmt:structural-blank=1
-    作为持久标识，避免依赖 Python 对象 id 在段落被修改后失效。
+    直接保存 Python ``id`` 只在当前进程中的对象存活期有效；段落被重新包装后
+    可能变化。因此把 ``docfmt-structural-blank=1`` 写在 ``w:pPr`` 上，让后续
+    遍历仍能区分结构性空行与待压缩的普通空段。Word 会忽略未知属性。
     """
     if not para.runs:
         para.add_run(' ')
@@ -1700,7 +1805,7 @@ def _format_structural_blank_paragraph(para, line_spacing_value=28, line_spacing
         28,
         'exact',
     )
-    # 持久标记：使用自定义命名空间属性，Word 会忽略它但 python-docx 能读
+    # 这是工具私有的无命名空间属性；Word 忽略它，python-docx 仍能原样读写。
     _mark_structural_blank(para)
 
 
@@ -1719,11 +1824,21 @@ def _is_structural_blank(para):
 
 
 def set_font(run, font_cn, font_en, size, bold=False, revision_mode=False):
+    """统一一个 run 的字符格式，并分别设置中文与西文字体。
+
+    Word 不会只看 ``run.font.name``。实际字体由 ``w:rFonts`` 的多个槽决定：
+    ``eastAsia`` 用于中文等东亚文字，``ascii``/``hAnsi`` 用于英文、数字及大量
+    西文标点，``cs`` 用于复杂文字脚本。因此本函数将中文字体写入
+    ``eastAsia``，将 Times New Roman 等西文字体写入其余三个槽。
+
+    除字体、字号和粗体外，本函数还会主动清除斜体、下划线、颜色、删除线和
+    上下标，以消除来源文档的直接格式干扰。若开启 ``revision_mode``，会把
+    修改前的 ``w:rPr`` 保存为格式修订快照。
+
+    纯媒体 run 是重要例外：其中可能含图片、VML 或 OLE 关系节点，不能按普通
+    文本清洗或重建，所以直接跳过。
     """
-    设置字体，同时清除原有格式（斜体、下划线、颜色）
-    """
-    # Do not alter runs which only carry media. In particular, never rebuild
-    # their run XML: it contains drawing/VML/OLE relationship nodes.
+    # 只承载媒体、没有可见文本的 run 必须原样保留底层关系节点。
     if _run_has_media(run) and not (run.text or '').strip():
         return
 
@@ -1754,7 +1869,7 @@ def set_font(run, font_cn, font_en, size, bold=False, revision_mode=False):
     run.font.subscript = False
     run.font.superscript = False
     
-    # 设置中文字体
+    # run.font.name 只覆盖不了全部 OOXML 字体槽，因此显式写 w:rFonts。
     r = run._r
     rPr = r.get_or_add_rPr()
     rFonts = rPr.find(qn('w:rFonts'))
@@ -1772,16 +1887,21 @@ def set_font(run, font_cn, font_en, size, bold=False, revision_mode=False):
 
 
 def format_paragraph(para, fmt, para_type, line_spacing_pt=28, first_line_bold=False, revision_mode=False, bold_serial=True):
-    """格式化段落
-    
-    fmt 支持的字段:
-        font_cn, font_en, size, bold, align, indent,
-        line_spacing_type - 行距类型：'exact' 固定磅值，'multiple' 倍数
-        line_spacing  - 行距值；旧配置中 None 仍表示使用1.5倍行距
-        space_before  - 段前间距(磅), 默认0
-        space_after   - 段后间距(磅), 默认0
+    """根据已识别的段落类型和 ``fmt`` 配置格式化一个段落。
+
+    算法分四步：
+
+    1. 重置样式继承，并在修订模式下保存原段落属性；
+    2. 设置对齐、缩进、行距和段前/段后距；
+    3. 对附件悬挂缩进、媒体行距做特殊处理；
+    4. 设置全部 run 的字体，并可选实现正文首句或序列词加粗。
+
+    ``fmt`` 中 ``size``、``indent``、``space_before``、``space_after`` 的单位为
+    磅；``line_spacing_type`` 为 ``exact`` 时行距也是磅，为 ``multiple`` 时
+    则是倍数。首句/序列词加粗需要重建 run，所以仅在段落没有媒体、超链接、
+    内容控件或修订包装 run 时执行，以免破坏非文本 XML。
     """
-    # v1.7.2: 重置段落 style 为 Normal，避免继承 Heading 样式上的 Autospacing
+    # 阶段 1：切断 Heading 等样式的自动间距继承，后续全部使用直接格式。
     _force_normal_style(para)
 
     # 修订模式：记录段落格式改动前的 pPr XML
@@ -1791,7 +1911,7 @@ def format_paragraph(para, fmt, para_type, line_spacing_pt=28, first_line_bold=F
 
     pf = para.paragraph_format
     
-    # 对齐方式
+    # 阶段 2：段落几何属性。
     align_map = {
         'center': WD_ALIGN_PARAGRAPH.CENTER,
         'left': WD_ALIGN_PARAGRAPH.LEFT,
@@ -1804,7 +1924,8 @@ def format_paragraph(para, fmt, para_type, line_spacing_pt=28, first_line_bold=F
     pf.left_indent = Pt(0)
     pf.right_indent = Pt(0)
     
-    # v1.8.1: attachment 类型走悬挂缩进，不走通用缩进逻辑
+    # 附件列表使用“整体左缩进 + 首行负缩进”的悬挂模型：续行保持在内容
+    # 起点，含“附件”的首行再向左伸出。独立的“附件N”页标题则完全顶格。
     attachment_page_title = para_type == 'attachment' and _is_attachment_page_title(para.text)
     if para_type == 'attachment':
         font_size_pt = fmt.get('size', 16) or 16
@@ -1871,7 +1992,8 @@ def format_paragraph(para, fmt, para_type, line_spacing_pt=28, first_line_bold=F
     if has_media:
         _set_media_paragraph_single_spacing(para)
     
-    # 字体 - 支持首句加粗
+    # 阶段 4：run 级字符格式。局部加粗分支会重建文本 run，因此上面先检测
+    # media 和 wrapped runs，只有结构简单的纯文本段落才允许进入。
     if first_line_bold and para_type == 'body':
         # 首句以中文句号“。”作为结束
         full_text = para.text
@@ -1881,7 +2003,7 @@ def format_paragraph(para, fmt, para_type, line_spacing_pt=28, first_line_bold=F
             first_part = full_text[:split_idx]
             rest_part = full_text[split_idx:]
             
-            # 重新构建 runs，确保只加粗首句
+            # 重建两个 run，确保粗体边界精确落在首个中文句号之后。
             for run in list(para.runs):
                 para._p.remove(run._r)
             
@@ -1919,6 +2041,7 @@ def format_paragraph(para, fmt, para_type, line_spacing_pt=28, first_line_bold=F
                 if rest:
                     run2 = para.add_run(rest)
                     set_font(run2, fmt['font_cn'], fmt['font_en'], fmt['size'], fmt.get('bold', False), revision_mode=revision_mode)
+                # 重建后再次隔离特殊标点；否则引号可能继承西文字体槽。
                 normalize_chinese_quote_fonts(para, fmt['font_cn'])
                 normalize_middle_dot_fonts(para)
                 return
@@ -1927,10 +2050,12 @@ def format_paragraph(para, fmt, para_type, line_spacing_pt=28, first_line_bold=F
         for run in iter_paragraph_runs(para):
             set_font(run, fmt['font_cn'], fmt['font_en'], fmt['size'], fmt.get('bold', False), revision_mode=revision_mode)
 
+    # 特殊标点最后处理：引号跟随当前段落中文字体，U+00B7 中点固定方正仿宋。
     normalize_chinese_quote_fonts(para, fmt['font_cn'])
     normalize_middle_dot_fonts(para)
 
-    # 修订模式：若段落格式有改动则嵌入 pPrChange
+    # 这里用整个 w:p XML 做粗粒度变化检测；命中后保存的是修改前的 pPr，
+    # 并不表示文本内容被记录成插入/删除修订。
     if revision_mode and para._p.xml != orig_ppr_xml:
         _add_ppr_change(para, orig_ppr)
 
@@ -1944,10 +2069,18 @@ def add_page_number(
     offset_from_text_mm=DEFAULT_PAGE_NUMBER_OFFSET_MM,
     replace_existing=True,
 ):
-    """按自定义样式添加页码。
+    """扫描并重建页脚中的动态页码域。
 
-    offset_from_text_mm 表示页码位于版心下边缘以下的距离，不是距纸张底边。
-    对标准公文下边距 35mm，偏移 7mm 对应 Word 页脚距底边约 28mm。
+    为保护用户内容，函数先检查普通、偶数页和首页三类页脚：只要发现非页码
+    内容，就整篇跳过；已有页码且 ``replace_existing=False`` 时也不修改。
+
+    ``position="outside"`` 会启用奇偶页页脚，使奇数页靠右、偶数页靠左。
+    ``offset_from_text_mm`` 表示页码相对版心下边缘的距离，而不是距纸张底边；
+    实际 ``footer_distance`` 由“下边距减去该偏移”得到。
+
+    Word 复杂域必须依次包含 ``begin → instrText → separate → 缓存结果 → end``。
+    缓存数字 ``1`` 会在 Word 打开后重新计算，同时保证 WPS 尚未刷新域时仍能
+    先显示页码，而不是把 ``{PAGE}`` 当普通文本。
     """
     def _footer_state(footer):
         """返回 (是否有内容, 是否包含 PAGE 页码域)。"""
@@ -2097,14 +2230,33 @@ def add_page_number(
 
 
 def format_document(input_path, output_path, preset_name='official', progress_callback=None, revision_mode=False, bold_serial=True, custom_settings=None):
-    """格式化文档
-    
+    """按预设完成一篇 DOCX 的全流程格式化。
+
+    流水线顺序如下，后一步通常依赖前一步产生的结构或上下文：
+
+    1. 选择/合并预设，并在 macOS 上解析可用中文字体；
+    2. 可选深度清洗和“标题+正文”拆段；
+    3. 清背景、设置页面属性、建立结构空行与附件分页；
+    4. 建立非空文本上下文，逐段分类并调用 :func:`format_paragraph`；
+    5. 二次校正空行，格式化顶层表格并补做嵌套表格字体；
+    6. 添加页码、格式化脚注、应用中文避头尾规则；
+    7. 保存到 ``output_path``。
+
     Args:
-        progress_callback: 可选回调函数，签名为 callback(current, total, stage_text)
+        input_path: 输入 DOCX 路径。
+        output_path: 输出 DOCX 路径。
+        preset_name: ``official``、``academic``、``nbc`` 或 ``custom``。
+        progress_callback: 可选 ``callback(current, total, stage_text)``。
+        revision_mode: 是否记录段落/字符格式的旧属性快照。
+        bold_serial: 当预设未指定时，正文序列词是否加粗。
+        custom_settings: 自定义预设，或对内置预设的递归字段覆盖。
+
+    该函数直接保存文件，不返回文档对象；诊断统计写入日志。
     """
     _revision_counter[0] = 0   # 每篇文档从 1 开始计 ID
 
-    # 处理自定义预设
+    # 自定义预设被视为完整配置；对内置预设传入 custom_settings 时只递归覆盖
+    # 指定字段，方便测试或临时改一个参数而不复制整个 PRESETS。
     if preset_name == 'custom' and custom_settings:
         preset = deepcopy(custom_settings)
         logger.info(f'Preset: {preset.get("name", "自定义格式")}')
@@ -2127,6 +2279,7 @@ def format_document(input_path, output_path, preset_name='official', progress_ca
         preset = _merge_preset_settings(preset, custom_settings)
     
     logger.info(f'Input: {input_path}')
+    # macOS 适配会深拷贝预设，避免改动全局 PRESETS 并污染后续文档。
     preset = _adapt_fonts_for_platform(preset)
     
     # 获取首句加粗选项
@@ -2175,8 +2328,8 @@ def format_document(input_path, output_path, preset_name='official', progress_ca
 
     body_spacing_type, body_line_spacing = _resolve_line_spacing(preset.get('body', {}), 28, 'exact')
 
-    # 标准公文版式保留两处可见空行：标题后、落款前。
-    # v1.7.2: 清理 styles.xml 里的 Autospacing 属性，避免内置样式覆盖直接属性
+    # 标准公文版式只保留两处有语义的可见空行：标题后、落款前。
+    # 先清理 styles.xml 的自动间距，避免内置样式覆盖稍后写入的直接属性。
     _strip_autospacing_from_styles(doc)
     structural_blank_ids = _ensure_structural_blank_lines(doc, body_line_spacing, body_spacing_type)
     _ensure_attachment_page_starts(doc)
@@ -2198,6 +2351,7 @@ def format_document(input_path, output_path, preset_name='official', progress_ca
     for i, para in enumerate(doc.paragraphs):
         text = _paragraph_text(para).strip()
         if not text:
+            # 视觉上无文字的段落可能仍承载图片，不能一律压缩。
             if _paragraph_has_media(para):
                 _set_media_paragraph_single_spacing(para)
             elif _is_structural_blank(para):
@@ -2206,6 +2360,7 @@ def format_document(input_path, output_path, preset_name='official', progress_ca
                 _compact_empty_paragraph(para)
             continue
         
+        # 附件正文标题由预扫描锁定；其他段落进入通用启发式分类器。
         para_type = 'title' if id(para._p) in attachment_document_title_ids else detect_para_type(
             text, i, total_paras,
             para.paragraph_format.alignment,
@@ -2290,6 +2445,8 @@ def format_document(input_path, output_path, preset_name='official', progress_ca
     tbl_header_bold = table_fmt.get('header_bold', False)
     tbl_first_line_indent = table_fmt.get('first_line_indent', 0)
 
+    # 这里故意先拍一份“段落/表格顺序”快照；循环中会插入空段，若实时遍历
+    # document.xml，新增节点会干扰当前位置和前后邻居判断。
     blocks = list(_iter_block_items(doc))
     for idx, block in enumerate(blocks):
         if not isinstance(block, Table):
@@ -2430,9 +2587,8 @@ def format_document(input_path, output_path, preset_name='official', progress_ca
                 if not (isinstance(next_block, Paragraph) and not next_block.text.strip()):
                     _insert_paragraph_after_table(table, text="")
 
-    # python-docx exposes only top-level tables through Document.tables.  Run
-    # a typography pass over nested tables so their Latin text, digits, quotes,
-    # and middle dots follow the same NBC rules as ordinary table cells.
+    # Document.tables 只公开顶层表格。再遍历嵌套表格补做字符格式，使其中的
+    # 英文、数字、引号和中点遵守与普通单元格相同的 NBC 规则。
     for top_level_table in doc.tables:
         for nested_table in _iter_nested_tables(top_level_table):
             _format_nested_table_typography(

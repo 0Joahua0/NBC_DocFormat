@@ -1,7 +1,18 @@
 #!/usr/bin/env python3
-"""
-NBC_DocFormat
-优化：更大图标、更好排版、卡片式选择
+"""NBC_DocFormat 桌面应用入口与任务调度层。
+
+本文件主要负责 Tk 界面、用户配置、后台线程和文件生命周期；真正的文档算法
+位于 ``scripts/``：
+
+- ``punctuation.py``：标点、空格、中文引号和中点字体；
+- ``formatter.py``：段落识别、字体/版式、表格、页码与脚注；
+- ``converter.py``：Windows 下 ``.doc/.wps`` 与临时 ``.docx`` 的 COM 转换；
+- ``analyzer.py``：只读诊断。
+
+核心调用链是 ``main → DocFormatApp.run_operation → _do_operation →
+_process_single_file``。耗时处理在后台线程执行；日志、进度和弹窗等界面写操作
+通过线程安全 helper 或 ``root.after`` 投递回主线程。当前仍有少量 Tk 变量读取
+发生在工作线程，维护时不应继续扩大这类访问。
 """
 
 import os
@@ -22,6 +33,8 @@ SCRIPT_DIR = PROJECT_ROOT / "scripts"
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from scripts.analyzer import analyze_punctuation, analyze_numbering, analyze_paragraph_format, analyze_font
+# 导入 formatter 时会立即应用 python-docx 的内嵌模板补丁；这是为了让
+# PyInstaller 单文件包在没有外部 templates 目录时仍能创建页眉/页脚。
 from scripts.formatter import format_document, PRESETS, DEFAULT_PAGE_NUMBER_OFFSET_MM
 
 
@@ -485,7 +498,12 @@ def _make_empty_config():
 
 
 def _migrate_legacy_config(legacy_data):
-    """把 v1.7.x 及更早的老格式配置迁移成 v1.8.0+ 的新 schema。"""
+    """把 v1.7.x 及更早的老格式配置迁移成 v1.8.0+ 的新 schema。
+
+    注意：该名称会覆盖文件前部负责“配置文件位置迁移”的同名 helper。
+    ``CONFIG_FILE`` 在覆盖发生前已经初始化，因此当前执行顺序可正常工作；阅读
+    或重构时应把“文件位置迁移”和“JSON schema 迁移”视为两个不同概念。
+    """
     import copy
     if not isinstance(legacy_data, dict):
         return _make_empty_config()
@@ -3958,6 +3976,14 @@ class ResultPanel(tk.Frame):
 
 
 class DocFormatApp:
+    """主窗口控制器：收集参数、调度后台任务并把结果反馈到 Tk 界面。
+
+    该类不实现具体 DOCX 算法，而是连接 UI 与 ``scripts`` 模块。所有耗时 I/O
+    都由工作线程执行；messagebox、结果卡片和进度控件等界面写操作应通过
+    ``root.after`` 回到主线程。代码中仍有少量 ``StringVar/BooleanVar.get``
+    读取发生在工作线程，属于需谨慎维护的现状，而不是推荐的新代码模式。
+    """
+
     def __init__(self, root):
         self.root = root
         self.root.title("NBC_DocFormat")
@@ -4769,6 +4795,12 @@ class DocFormatApp:
             self.output_file.set(filename)
     
     def run_operation(self):
+        """校验当前界面输入，计算任务特征并启动后台工作线程。
+
+        此阶段只做快速检查，不打开或修改文档。单文件输出可指定完整文件名；
+        批量输出使用目录，并在调度器内生成 ``*_processed`` 文件名。诊断模式
+        是只读操作且一次仅处理一个文件。
+        """
         # 确定输入列表
         if self.input_files:
             input_paths = self.input_files[:]
@@ -4837,6 +4869,8 @@ class DocFormatApp:
             has_input_conversion=has_input_conversion,
             has_output_conversion=has_output_conversion
         )
+        # 不在 Tk 主线程中执行 Word 解析/保存，否则处理大文档时界面会冻结。
+        # 工作线程内部需要更新 UI 时，由相关方法使用 root.after 投递。
         thread = threading.Thread(
             target=self._do_operation,
             args=(input_paths, output_base, mode, rev_mode)
@@ -4844,7 +4878,12 @@ class DocFormatApp:
         thread.start()
     
     def _do_operation(self, input_paths, output_base, mode, revision_mode=False):
-        """批量调度器：循环处理每个文件，汇总结果。"""
+        """批量调度文件，映射每个文件的局部进度并汇总成功/失败结果。
+
+        一个文件失败不会中止整个批次。``progress_fn`` 把单文件的 0～100 映射
+        到全批次区间；结束后再通过 ``root.after`` 显示 Tk 对话框。该方法运行在
+        后台线程中，因此不能直接创建或修改 Tk 控件。
+        """
         total = len(input_paths)
         success_paths = []
         failed_files = []
@@ -4860,6 +4899,7 @@ class DocFormatApp:
                 offset = int(idx / total * 100)
                 per_range = int(1 / total * 100) or 1
 
+                # 为当前文件创建闭包，把局部百分比折算到整批任务进度。
                 def make_progress_fn(off, rng):
                     return lambda pct, text: self._update_progress(
                         off + pct * rng // 100, 100, text
@@ -4947,11 +4987,25 @@ class DocFormatApp:
                 self._pending_temp_input = None
 
     def _process_single_file(self, input_path, output_path, mode, progress_fn, revision_mode=False):
-        """
-        处理单个文件。
-        progress_fn(pct: int, text: str) 由调用方传入，负责映射到全局进度条。
-        返回 (实际输出路径, summary)（可能因回退而改变后缀）。
-        不调用 _reset_btn，不显示完成 messagebox（由调用方统一处理）。
+        """执行一个文件的转换、处理及可选回转流程。
+
+        数据路径可以概括为：
+
+        ``.doc/.wps → 临时 .docx → 标点/格式处理 → 可选转回 .doc/.wps``
+
+        ``smart`` 模式先把标点结果写入临时 DOCX，再由格式化器读取；这样两个
+        阶段职责清晰，但修订模式只记录后半段的格式属性变化，不记录前半段的
+        文本替换。输入/输出格式转换产生的临时文件由最外层 ``finally`` 清理；
+        smart 阶段的中间文件在格式化成功后立即删除。
+
+        Args:
+            progress_fn: ``progress_fn(pct, text)``，由批量调度器映射到全局进度。
+
+        Returns:
+            ``(实际输出路径, summary)``。当旧格式回转失败时，路径可能回退为
+            ``.docx``；当前 ``summary`` 预留为 ``None``。
+
+        本函数不重置按钮、不弹完成框，统一由 :meth:`_do_operation` 汇总处理。
         """
         temp_docx = None
         temp_output_docx = None
@@ -4970,6 +5024,8 @@ class DocFormatApp:
         try:
             from docx import Document
 
+            # python-docx 不能读取 .doc/.wps；先转换为临时 DOCX，后续所有算法
+            # 只面对一种文件格式。
             ext = Path(input_path).suffix.lower()
             if ext in ('.doc', '.wps'):
                 progress_fn(0, f'转换 {ext} 为 .docx...')
@@ -4985,6 +5041,8 @@ class DocFormatApp:
                 input_path = temp_docx
                 self.log_panel.log("转换成功", 'success')
 
+            # 用户要求旧格式输出时，先把处理结果写进另一个临时 DOCX，最后再
+            # 交给 Office/WPS 保存；这样处理中途失败也不会生成伪装后缀文件。
             output_ext = Path(output_path).suffix.lower()
             needs_convert_back = output_ext in ('.doc', '.wps')
             if needs_convert_back:
@@ -5014,6 +5072,8 @@ class DocFormatApp:
                 progress_fn(100, '完成')
 
             elif mode == 'smart':
+                # 智能模式严格按“文本正规化 → 版式格式化”两阶段执行。标点阶段
+                # 的临时输出是格式阶段的输入，不能交换顺序。
                 import tempfile
                 with tempfile.NamedTemporaryFile(suffix='.docx', delete=False) as tmp:
                     temp_path = tmp.name
@@ -5031,6 +5091,7 @@ class DocFormatApp:
                 os.unlink(temp_path)
 
             if mode != 'analyze' and needs_convert_back:
+                # 转回旧格式失败时仍保留已处理好的 DOCX，避免用户成果丢失。
                 from scripts.converter import convert_from_docx
                 try:
                     progress_fn(90, f'转换回 {output_ext} 格式...')
@@ -5096,6 +5157,12 @@ class DocFormatApp:
         self._hide_progress()
     
     def _run_punctuation(self, input_path, output_path, quiet=False, space_mode='remove_all'):
+        """运行标点阶段并保存 DOCX。
+
+        ``Document.paragraphs`` 不包含表格单元格，所以正文与顶层表格分别遍历；
+        随后统一写入中文避头尾规则。``quiet`` 用于 smart 模式，避免两阶段重复
+        输出成功提示。
+        """
         from docx import Document
         from scripts.punctuation import process_paragraph
         from scripts.east_asian_typography import apply_chinese_line_break_rules
@@ -5121,6 +5188,12 @@ class DocFormatApp:
             self.log_panel.log(f"修复了 {changes} 处标点{suffix}", 'success')
     
     def _run_format(self, input_path, output_path, progress_callback=None, revision_mode=False):
+        """调用格式化核心，并把 formatter 日志桥接到 GUI 日志面板。
+
+        临时 ``logging.Handler`` 必须在 ``finally`` 中移除；否则批量处理第二个
+        文件时会重复注册，导致同一日志打印多次。自定义预设在此加载完整配置，
+        与标点阶段只读取 ``space_handling`` 的用途不同。
+        """
         preset_name = self.preset.get()
         
         # 设置 logging handler，让 formatter 的日志输出到日志面板
@@ -5171,6 +5244,7 @@ class DocFormatApp:
 
 
 def main():
+    """创建 Tk 根窗口，并在拖拽组件不可用时自动降级后进入事件循环。"""
     global _DND_AVAILABLE
     _enable_windows_high_dpi()
     
