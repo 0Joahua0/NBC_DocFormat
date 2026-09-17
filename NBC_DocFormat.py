@@ -114,7 +114,7 @@ except Exception as e:
     _DND_DISABLED_REASON = f"拖拽运行库不可用：{e}"
     _DND_AVAILABLE = False
 
-__version__ = '1.0.1'
+__version__ = '1.0.2'
 
 def resource_path(*parts):
     """返回源码运行或 PyInstaller 打包后的资源路径。"""

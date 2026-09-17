@@ -34,8 +34,8 @@ def test_application_and_build_versions_match_current_release():
     gui_source = _read("NBC_DocFormat.py")
     build_source = _read("build.py")
 
-    assert "__version__ = '1.0.1'" in gui_source
-    assert 'VERSION = "1.0.1"' in build_source
+    assert "__version__ = '1.0.2'" in gui_source
+    assert 'VERSION = "1.0.2"' in build_source
 
 
 def test_readme_declares_upstream_project_and_accurate_license_section():
