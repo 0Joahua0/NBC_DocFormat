@@ -32,7 +32,7 @@ _configure_console_encoding()
 # 配置
 APP_NAME = "NBC_DocFormat"
 APP_NAME_EN = "NBC_DocFormat"
-VERSION = "1.0.2"
+VERSION = "1.0.3"
 MAIN_SCRIPT = "NBC_DocFormat.py"
 MACOS_APP_BUNDLE_NAME = os.environ.get("MACOS_APP_BUNDLE_NAME", "NBC_DocFormat").strip()
 
@@ -629,42 +629,12 @@ def build_macos():
 
 
 def create_release_notes():
-    """生成发布说明"""
-    notes = f"""# {APP_NAME}
-
-## 下载
-
-- **Windows 10/11**: `NBC_DocFormat_windows.exe` - 双击运行
-- **Windows 7/8 兼容版**: `NBC_DocFormat_windows_win7.exe` - 双击运行
-- **Linux x86_64**: `NBC_DocFormat_linux_amd64.AppImage` - 添加执行权限后运行
-- **Linux ARM64**: `NBC_DocFormat_linux_aarch64.AppImage` - 添加执行权限后运行
-
-## 功能
-
-- ✅ 智能一键处理（标点修复 + 格式统一）
-- ✅ 格式诊断
-- ✅ 标点符号修复
-- ✅ 支持 GB/T 公文标准、学术论文、NBC格式
-- ✅ 中文禁则、图片附件保护和可自定义标题中英文字体
-
-## 系统要求
-
-- Windows 7/8/10/11 或
-- 麒麟 V10 / 统信 UOS 或其他 Linux 发行版
-
-## 使用说明
-
-1. 下载对应系统的文件
-2. 双击运行（Linux 需先添加执行权限）
-3. 选择要处理的 .docx 文件
-4. 点击「开始处理」
-
-## 注意事项
-
-- 仅支持 .docx 格式，不支持旧版 .doc
-- 处理后的文件会另存为新文件，不会覆盖原文件
-- macOS 和 Linux 版本不支持 .doc/.wps 格式转换
-"""
+    """从统一 Markdown 模板生成本地及 GitHub 发布说明，保留真实换行。"""
+    template = Path(__file__).resolve().parent / "packaging" / "RELEASE_NOTES.md"
+    repository = os.environ.get("GITHUB_REPOSITORY", "0Joahua0/NBC_DocFormat")
+    notes = template.read_text(encoding="utf-8")
+    notes = notes.replace("{{VERSION}}", f"v{VERSION}").replace("{{REPOSITORY}}", repository)
+    DIST_DIR.mkdir(parents=True, exist_ok=True)
     
     release_file = DIST_DIR / "RELEASE_NOTES.md"
     release_file.write_text(notes, encoding="utf-8")

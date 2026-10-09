@@ -259,6 +259,18 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     
     steps:
+      - name: Checkout release notes
+        uses: actions/checkout@v4
+
+      - name: Generate release notes
+        run: |
+          python3 - <<'PY'
+          import os
+          import build
+          assert os.environ["GITHUB_REF_NAME"] == f"v{build.VERSION}", "Tag and build version must match"
+          build.create_release_notes()
+          PY
+
       - name: Download Windows artifact
         uses: actions/download-artifact@v4
         with:
@@ -301,60 +313,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           name: NBC_DocFormat ${{ steps.get_version.outputs.VERSION }}
-          body: |
-            ## Windows 10/11 版下载
-            
-            👉 [NBC_DocFormat_windows.exe](https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.VERSION }}/NBC_DocFormat_windows.exe)
-            
-            ## Windows 7/8 兼容版下载
-            
-            👉 [NBC_DocFormat_windows_win7.exe](https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.VERSION }}/NBC_DocFormat_windows_win7.exe)
-            
-            > ⚠️ Win7 用户请下载此版本，需要 Windows 7 SP1 及以上。如果闪退请安装 [Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe)
-            
-            ## Linux 版下载（国产系统 / 麒麟 / 统信 UOS）
-            
-            先查询架构：在终端运行 `uname -m`
-            
-            输出 `x86_64`：下载 amd64 版本
-            输出 `aarch64` 或 `arm64`：下载 aarch64 版本
-            
-            x86_64（Intel/AMD）：[NBC_DocFormat_linux_amd64.AppImage](https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.VERSION }}/NBC_DocFormat_linux_amd64.AppImage)
-            ARM64（飞腾/鲲鹏等）：[NBC_DocFormat_linux_aarch64.AppImage](https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.VERSION }}/NBC_DocFormat_linux_aarch64.AppImage)
-            
-            运行步骤：
-            1. `chmod +x NBC_DocFormat_linux_amd64.AppImage`（或 `NBC_DocFormat_linux_aarch64.AppImage`）
-            2. `./NBC_DocFormat_linux_amd64.AppImage`
-            3. 如果运行报错，请使用 [install.sh 脚本方式](https://github.com/${{ github.repository }}#国产系统用户麒麟--统信-uos)
-            
-            仅支持 `.docx` 文件。
-            
-            ## macOS 版下载
-            
-            Intel 芯片：[NBC_DocFormat_macos_intel.dmg](https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.VERSION }}/NBC_DocFormat_macos_intel.dmg)
-            Apple Silicon（M 系列）：[NBC_DocFormat_macos_apple_silicon.dmg](https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.VERSION }}/NBC_DocFormat_macos_apple_silicon.dmg)
-            
-            **macOS 运行说明**：
-            1. 双击 `.dmg` 文件挂载
-            2. 将应用拖入"应用程序"文件夹，或直接双击运行
-            3. 首次打开如提示"无法验证开发者"，请到 系统设置 → 隐私与安全性 → 仍要打开
-            4. 仅支持 `.docx` 文件（macOS 不支持 .doc/.wps 转换）
-            
-            ## 使用说明
-            
-            1. 下载对应系统的文件
-            2. 双击运行
-            3. 选择要处理的 .docx 文件
-            4. 点击「开始处理」
-            
-            ## 功能
-            
-            - ✅ 智能一键处理（标点修复 + 格式统一）
-            - ✅ 格式诊断（仅分析，不修改）
-            - ✅ 标点符号修复
-            - ✅ 支持 GB/T 公文标准
-            - ✅ 中文禁则、图片附件保护和标题中英文字体设置
-
+          body_path: dist/RELEASE_NOTES.md
           files: |
             dist/NBC_DocFormat_windows.exe
             dist/NBC_DocFormat_windows_win7.exe

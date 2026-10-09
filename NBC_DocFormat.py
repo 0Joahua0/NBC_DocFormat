@@ -127,7 +127,7 @@ except Exception as e:
     _DND_DISABLED_REASON = f"拖拽运行库不可用：{e}"
     _DND_AVAILABLE = False
 
-__version__ = '1.0.2'
+__version__ = '1.0.3'
 
 def resource_path(*parts):
     """返回源码运行或 PyInstaller 打包后的资源路径。"""
@@ -469,11 +469,11 @@ DEFAULT_CUSTOM_SETTINGS = {
 }
 
 
-# v1.8.0: 配置文件 schema 版本
+# 沿用上游 schema 2；builtin_overrides 为可选字段，旧配置无需迁移。
 CONFIG_SCHEMA_VERSION = 2
 PAGE_NUMBER_CONFIG_VERSION = 1
 
-# 内置只读预设的 id（与 PRESETS dict key 对应）
+# 内置预设的 id（与 PRESETS dict key 对应）
 BUILTIN_PRESET_IDS = ('official', 'academic', 'nbc')
 
 
@@ -579,7 +579,7 @@ def _ensure_page_number_config(config):
 
 
 def load_custom_settings():
-    """加载用户自定义设置，并修复旧配置缺失的 active preset。"""
+    """加载自定义预设和内置覆盖项，并补齐旧配置缺失的当前自定义预设。"""
     if not CONFIG_FILE.exists():
         config = _make_empty_config()
     else:
@@ -621,7 +621,7 @@ def save_custom_settings(config):
     """保存配置文件。
     
     Args:
-        config: 完整的 config dict（包含 schema_version、presets 等）
+        config: 完整配置，包含 schema_version、presets 和可选 builtin_overrides。
     """
     try:
         # 兼容：如果调用方还在传旧的 settings dict（无 schema_version），
@@ -671,6 +671,36 @@ def get_active_user_preset(config):
     return _make_default_user_preset()
 
 
+def get_format_settings(preset_id, config=None):
+    """为 GUI 解析有效配置：内置默认值叠加用户覆盖，custom 取当前自定义预设。
+
+    返回独立副本，不修改全局 PRESETS；标点阶段与格式化阶段都使用此入口。
+    """
+    import copy
+    if config is None:
+        config = load_custom_settings()
+    if preset_id == 'custom':
+        return copy.deepcopy(get_active_user_preset(config))
+    return _merge_settings(
+        copy.deepcopy(PRESETS[preset_id]),
+        config.get('builtin_overrides', {}).get(preset_id, {}),
+    )
+
+
+def _changed_settings(before, after):
+    """只提取表单发生变化的字段，保留预设中未显示或未修改的设置。"""
+    import copy
+    changes = {}
+    for key, value in after.items():
+        if isinstance(value, dict) and isinstance(before.get(key), dict):
+            nested = _changed_settings(before[key], value)
+            if nested:
+                changes[key] = nested
+        elif key not in before or before[key] != value:
+            changes[key] = copy.deepcopy(value)
+    return changes
+
+
 def _fit_dialog_to_screen(dialog, parent, desired_w, desired_h, min_w, min_h):
     """让弹窗按屏幕可用空间自动取尺寸并居中显示。"""
     dialog.update_idletasks()
@@ -707,21 +737,28 @@ BODY_FONT_GROUP = ['body', 'heading3', 'heading4', 'closing', 'attachment', 'sig
 
 
 class CustomSettingsDialog(tk.Toplevel):
-    """自定义格式设置弹窗 - 快速设置 + 高级设置（可折叠）"""
+    """共用格式编辑器：preset_id 指定内置模式，为空时管理自定义预设。
+
+    内置模式以表单初始值为基准，仅将修改字段写入 builtin_overrides，
+    保留日期、脚注等专用格式；恢复默认后保存会移除该模式的覆盖项。
+    """
     
-    def __init__(self, parent, on_save=None):
+    def __init__(self, parent, on_save=None, preset_id=None):
         super().__init__(parent)
         self.dialog = self
         
         self.on_save = on_save
+        self.builtin_preset_id = preset_id
         self._config = load_custom_settings()
-        self.settings = get_active_user_preset(self._config)
+        self.settings = (get_format_settings(preset_id, self._config) if preset_id
+                         else get_active_user_preset(self._config))
         if not self._config.get('active_preset_id') and self.settings.get('id'):
             self._config['active_preset_id'] = self.settings['id']
         self._adv_vars = {}  # 高级模式的变量存储
         
         # 窗口设置
-        self.title("自定义格式设置")
+        self.settings_title = f"编辑{self.settings['name']}" if preset_id else "自定义格式设置"
+        self.title(self.settings_title)
         self.configure(bg=Theme.BG)
         self.resizable(True, True)
         
@@ -737,7 +774,8 @@ class CustomSettingsDialog(tk.Toplevel):
         )
         
         self._create_widgets()
-        self._refresh_preset_list()
+        if not preset_id:
+            self._refresh_preset_list()
         self.update_idletasks()   # 确保所有控件完成布局
         self._load_values()
         self.after_idle(self._load_values)  # 事件循环空闲后再刷新一次，兜底
@@ -762,7 +800,7 @@ class CustomSettingsDialog(tk.Toplevel):
         header.pack(fill='x', padx=20, pady=(15, 5))
         
         tk.Label(
-            header, text="⚙️ 自定义格式设置", font=get_font(16, 'bold'),
+            header, text=f"⚙️ {self.settings_title}", font=get_font(16, 'bold'),
             bg=Theme.BG, fg=Theme.TEXT
         ).pack(side='left')
         
@@ -786,7 +824,8 @@ class CustomSettingsDialog(tk.Toplevel):
         cancel_top.pack(side='right', padx=(0, 10))
         cancel_top.bind('<Button-1>', lambda e: self._on_close())
 
-        self._build_preset_bar(self)
+        if not self.builtin_preset_id:
+            self._build_preset_bar(self)
         
         # ===== 滚动区域 =====
         scroll_container = tk.Frame(self, bg=Theme.BG)
@@ -1268,7 +1307,7 @@ class CustomSettingsDialog(tk.Toplevel):
         
         # 恢复默认
         reset_btn = tk.Label(
-            btn_row, text="恢复默认公文格式", font=get_font(11),
+            btn_row, text="恢复此预设默认值" if self.builtin_preset_id else "恢复默认公文格式", font=get_font(11),
             bg=Theme.BG, fg=Theme.TEXT_SECONDARY, cursor='hand2'
         )
         reset_btn.pack(side='left')
@@ -2005,6 +2044,11 @@ class CustomSettingsDialog(tk.Toplevel):
                     'line_spacing': vars_dict['line_spacing'].get(),
                     'bold': vars_dict['bold'].get(),
                 }
+            if self.builtin_preset_id:
+                import copy
+                # 分别保留原配置和表单显示值，避免默认回填/快速联动改写未编辑字段。
+                self._loaded_settings = copy.deepcopy(self.settings)
+                self._initial_form_settings = self._collect_values(raw=True)
         except Exception as e:
             print(f"[警告] 加载设置到界面失败: {e}")
     
@@ -2021,11 +2065,17 @@ class CustomSettingsDialog(tk.Toplevel):
     
     def _reset_defaults(self):
         import copy
-        self.settings = copy.deepcopy(DEFAULT_CUSTOM_SETTINGS)
+        self.settings = copy.deepcopy(
+            PRESETS[self.builtin_preset_id] if self.builtin_preset_id else DEFAULT_CUSTOM_SETTINGS
+        )
         self._load_values()
 
     def _save_values(self):
         """保存当前 UI 值到 self.settings，不写文件、不关闭弹窗。"""
+        self.settings = self._collect_values()
+
+    def _collect_values(self, raw=False):
+        """收集表单值；内置预设用前后差异避免联动覆盖原有专用格式。"""
         current_name = self.settings.get('name', '我的自定义格式')
 
         # 收集快速设置值
@@ -2084,7 +2134,7 @@ class CustomSettingsDialog(tk.Toplevel):
         page_number_offset_mm = max(0, min(30, page_number_offset_mm))
 
         # 构建基础设置 — 正文字体联动到多个元素
-        self.settings = {
+        settings = {
             'name': current_name,
             'page': page,
             'title': {
@@ -2178,10 +2228,17 @@ class CustomSettingsDialog(tk.Toplevel):
             'replace_existing_page_number': self.replace_page_number_var.get(),
         }
 
+        if raw:
+            return settings
+        if self.builtin_preset_id:
+            settings = _merge_settings(
+                self._loaded_settings, _changed_settings(self._initial_form_settings, settings)
+            )
+
         # 应用高级设置覆盖（仅在用户真正修改过时）
         initial = getattr(self, '_adv_initial_values', {})
         for key, vars_dict in self._adv_vars.items():
-            if key in self.settings and isinstance(self.settings[key], dict):
+            if key in settings and isinstance(settings[key], dict):
                 key_initial = initial.get(key, {})
 
                 adv_font = vars_dict['font'].get()
@@ -2192,21 +2249,22 @@ class CustomSettingsDialog(tk.Toplevel):
 
                 # 只在值与初始值不同时才覆盖（说明用户主动修改了）
                 if adv_font and adv_font != key_initial.get('font', ''):
-                    self.settings[key]['font_cn'] = adv_font
+                    settings[key]['font_cn'] = adv_font
                 if adv_font_en and adv_font_en != key_initial.get('font_en', ''):
-                    self.settings[key]['font_en'] = adv_font_en
+                    settings[key]['font_en'] = adv_font_en
                 if adv_size and vars_dict['size'].get() != key_initial.get('size', ''):
-                    self.settings[key]['size'] = adv_size
+                    settings[key]['size'] = adv_size
                 if adv_ls_str and (
                     adv_ls_str != key_initial.get('line_spacing', '').strip() or
                     vars_dict['line_spacing_type'].get() != key_initial.get('line_spacing_type', '')
                 ):
-                    self.settings[key]['line_spacing_type'] = adv_ls_type
-                    self.settings[key]['line_spacing'] = self._get_line_spacing(
+                    settings[key]['line_spacing_type'] = adv_ls_type
+                    settings[key]['line_spacing'] = self._get_line_spacing(
                         vars_dict['line_spacing'], 28, adv_ls_type
                     )
                 if vars_dict['bold'].get() != key_initial.get('bold', False):
-                    self.settings[key]['bold'] = vars_dict['bold'].get()
+                    settings[key]['bold'] = vars_dict['bold'].get()
+        return settings
     
     def _save(self):
         """保存设置 - 快速设置为主，高级设置覆盖"""
@@ -2214,16 +2272,18 @@ class CustomSettingsDialog(tk.Toplevel):
             # 保存当前 UI 值回 self.settings
             self._save_values()
 
-            # 写回 _config 中对应 preset
-            active_id = self._config.get('active_preset_id')
-            if active_id:
-                for i, p in enumerate(self._config['presets']):
-                    if p.get('id') == active_id:
-                        self.settings['id'] = active_id
-                        self.settings['is_builtin'] = False
-                        self._config['presets'][i] = self.settings
-                        break
-            save_custom_settings(self._config)
+            # 内置覆盖与自定义列表分别保存；切勿改写其他模式或当前自定义预设 id。
+            if self.builtin_preset_id:
+                overrides = self._config.setdefault('builtin_overrides', {})
+                changes = _changed_settings(PRESETS[self.builtin_preset_id], self.settings)
+                if changes:
+                    overrides[self.builtin_preset_id] = changes
+                else:
+                    overrides.pop(self.builtin_preset_id, None)
+            else:
+                self._write_current_settings_to_config()
+            if save_custom_settings(self._config) is None:
+                raise OSError("无法写入配置文件，请检查文件权限或磁盘空间")
             
             if self.on_save:
                 self.on_save(self.settings)
@@ -3273,15 +3333,16 @@ class SelectableCard(tk.Frame):
 
 
 class PresetCard(tk.Frame):
-    """格式预设卡片"""
+    """格式预设卡片：点击名称选择模式，独立编辑按钮打开对应设置。"""
     
-    def __init__(self, parent, text, value, variable, command=None, **kwargs):
+    def __init__(self, parent, text, value, variable, command=None, edit_command=None, **kwargs):
         super().__init__(parent, bg=Theme.CARD, **kwargs)
         
         self.value = value
         self.variable = variable
         self.selected = False
         self.command = command  # 自定义点击命令
+        self.enabled = True
         
         self.configure(
             highlightbackground=Theme.BORDER,
@@ -3299,6 +3360,16 @@ class PresetCard(tk.Frame):
             pady=Theme.SPACE_MD
         )
         self.label.pack()
+
+        self.edit_button = None
+        if edit_command:
+            self.edit_button = tk.Button(
+                self, text='编辑', command=edit_command,
+                font=get_font(10), fg=Theme.PRIMARY, bg=Theme.CARD,
+                relief='flat', borderwidth=0, cursor='hand2',
+                padx=Theme.SPACE_SM, pady=2,
+            )
+            self.edit_button.pack(pady=(0, Theme.SPACE_SM))
         
         # 绑定
         for widget in [self, self.label]:
@@ -3311,6 +3382,8 @@ class PresetCard(tk.Frame):
         self._update_style()
     
     def _on_click(self, event=None):
+        if not self.enabled:
+            return
         self.variable.set(self.value)
         # 如果有自定义命令，执行它
         if self.command:
@@ -3331,8 +3404,13 @@ class PresetCard(tk.Frame):
         else:
             self.configure(bg=Theme.CARD, highlightbackground=Theme.BORDER, highlightthickness=1)
             self.label.configure(bg=Theme.CARD, fg=Theme.TEXT, font=get_font(12))
+        if self.edit_button:
+            self.edit_button.configure(bg=Theme.PRIMARY_LIGHT if self.selected else Theme.CARD)
     
     def set_enabled(self, enabled):
+        self.enabled = enabled
+        if self.edit_button:
+            self.edit_button.configure(state='normal' if enabled else 'disabled')
         if enabled:
             self.label.configure(fg=Theme.TEXT, cursor='hand2')
             self.configure(cursor='hand2')
@@ -4206,7 +4284,10 @@ class DocFormatApp:
         ]
         
         for i, (value, text) in enumerate(presets):
-            card = PresetCard(preset_row, text, value, self.preset)
+            card = PresetCard(
+                preset_row, text, value, self.preset,
+                edit_command=lambda preset_id=value: self._open_builtin_settings(preset_id),
+            )
             card.pack(side='left', padx=(0 if i == 0 else Theme.SPACE_SM, 0))
             self.preset_cards.append(card)
         
@@ -4586,6 +4667,14 @@ class DocFormatApp:
         popup.focus_set()
         popup.bind('<FocusOut>', lambda e: popup.destroy())
     
+    def _open_builtin_settings(self, preset_id):
+        """编辑指定内置模式，保存后继续使用该模式。"""
+        def on_save(settings):
+            self.preset.set(preset_id)
+            self.log_panel.log(f"{settings['name']}设置已保存", 'success')
+
+        CustomSettingsDialog(self.root, on_save=on_save, preset_id=preset_id)
+
     def _open_custom_settings(self):
         """打开自定义设置窗口"""
         def on_save(settings):
@@ -5012,14 +5101,9 @@ class DocFormatApp:
 
         # 确定空格处理模式
         preset_name = self.preset.get() if hasattr(self, 'preset') else 'official'
-        if preset_name == 'custom':
-            try:
-                _config = load_custom_settings()
-                _cs = get_active_user_preset(_config)
-                space_mode = _cs.get('space_handling', 'remove_all')
-            except Exception:
-                space_mode = 'remove_all'
-        else:
+        try:
+            space_mode = get_format_settings(preset_name).get('space_handling', 'remove_all')
+        except Exception:
             space_mode = 'remove_all'
         try:
             from docx import Document
@@ -5191,8 +5275,8 @@ class DocFormatApp:
         """调用格式化核心，并把 formatter 日志桥接到 GUI 日志面板。
 
         临时 ``logging.Handler`` 必须在 ``finally`` 中移除；否则批量处理第二个
-        文件时会重复注册，导致同一日志打印多次。自定义预设在此加载完整配置，
-        与标点阶段只读取 ``space_handling`` 的用途不同。
+        文件时会重复注册，导致同一日志打印多次。所有模式统一通过
+        ``get_format_settings`` 读取保存后的有效配置，再传入格式化核心。
         """
         preset_name = self.preset.get()
         
@@ -5215,16 +5299,8 @@ class DocFormatApp:
         
         try:
             cb = progress_callback if progress_callback is not None else self._update_progress
-            bold_serial = True
-            custom_settings = None
-            if preset_name == 'custom':
-                try:
-                    _config = load_custom_settings()
-                    _cs = get_active_user_preset(_config)
-                    custom_settings = _cs
-                    bold_serial = _cs.get('bold_serial', True)
-                except Exception:
-                    pass
+            custom_settings = get_format_settings(preset_name)
+            bold_serial = custom_settings.get('bold_serial', True)
             format_document(input_path, output_path, preset_name,
                            progress_callback=cb, revision_mode=revision_mode,
                            bold_serial=bold_serial, custom_settings=custom_settings)

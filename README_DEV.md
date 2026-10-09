@@ -20,7 +20,7 @@ scripts/formatter.py
     → 表格 / 页码 / 脚注 / 中文换行规则
 ```
 
-如果只研究本次 NBC 字体修复，推荐依次查看：
+如果只研究 NBC格式 字体修复，推荐依次查看：
 
 1. `scripts/formatter.py::set_font`
 2. `scripts/punctuation.py::_set_run_font_slots`
@@ -92,6 +92,22 @@ helper 或 `root.after()` 返回主线程。当前仍有少量 Tk 变量的 `.ge
 仓库里这个文件是**源码运行模式（`python NBC_DocFormat.py` / `bash install.sh`）的默认配置**，
 内容与代码里的 DEFAULT_CUSTOM_SETTINGS 保持一致。
 
+### 内置预设编辑（v1.0.3）
+
+`PRESETS` 保留程序默认值。三个内置模式的用户改动存入 schema 2 配置中的可选字段
+`builtin_overrides`，以 `official`、`academic`、`nbc` 为键；独立自定义预设仍使用
+`presets` 和 `active_preset_id`。不修改 schema 版本，旧配置可直接读取。
+
+主界面通过 `CustomSettingsDialog(..., preset_id=...)` 打开内置编辑器。加载时记录
+原始配置和表单初始值，保存时只合并实际变化，再写入相对于内置默认值的差异。
+这是为了避免快速设置的默认回填和联动重写 NBC 日期、脚注、页眉页脚等专用格式。
+恢复默认后保存会移除该模式的覆盖项，取消编辑不会写文件；写入失败时保留编辑窗口。
+
+GUI 的标点处理和文档格式化均通过 `get_format_settings()` 读取有效配置。
+直接调用 `scripts.formatter.format_document()` 时，内置模式的覆盖项需由调用方通过
+`custom_settings` 显式传入。界面、持久化和实际 DOCX 输出的回归测试位于
+`tests/test_builtin_preset_editing.py`；这些 GUI 测试需要可用的 Tk 显示环境。
+
 ### 给开发者的提示
 
 该文件会随源码一起提交，作为源码运行模式的默认配置。**如果你在调试时通过 GUI 保存了自定义设置，
@@ -105,3 +121,15 @@ helper 或 `root.after()` 返回主线程。当前仍有少量 Tk 变量的 `.ge
 - Windows/Linux 打包发布版：exe 同目录
 - macOS 打包发布版：~/Library/Application Support/NBC_DocFormat/
 - 开发模式（python 直接运行）：项目根目录（即这个文件本身）
+
+## 版本与发布
+
+1. 同步 `NBC_DocFormat.py::__version__`、`build.py::VERSION` 和版本检查测试。
+2. 更新中英文 README 及 `packaging/RELEASE_NOTES.md` 中的本次更新内容。
+3. 执行 `python -m pytest -q`。确认 `custom_settings.json` 未混入个人配置。
+4. 提交代码并推送 `vX.Y.Z` 标签，GitHub Actions 会构建六个平台产物并创建 Release。
+
+`build.create_release_notes()` 从统一 Markdown 模板生成 `dist/RELEASE_NOTES.md`，
+替换 `{{VERSION}}` 与 `{{REPOSITORY}}`。GitHub 发布步骤使用 `body_path` 读取该文件，
+避免通过命令行字符串拼接时丢失换行。手动修改现有发布页时使用
+`gh release edit <tag> --notes-file <file>`，保留标题、表格和代码块的原始换行。

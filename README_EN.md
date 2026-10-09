@@ -2,12 +2,14 @@
 
 A local Word document formatting tool for Chinese official-document workflows. It supports one-click processing, format diagnosis, punctuation repair, and configurable formatting presets.
 
+[Download the latest release](https://github.com/0Joahua0/NBC_DocFormat/releases/latest) · [中文](README.md) · [Developer notes](README_DEV.md)
+
 <p align="center">
   <img src="assets/imageforgithub.png" alt="NBC document format processor" width="900">
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Platform-Windows%207%2F8%2F10%2F11%20%7C%20Linux-blue" alt="Platform">
+  <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-blue" alt="Platform">
   <img src="https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-orange" alt="License">
   <img src="https://img.shields.io/badge/Language-Python-yellow" alt="Language">
 </p>
@@ -24,7 +26,14 @@ Thanks to the original author for the document-formatting foundation, desktop im
 
 NBC_DocFormat processes common `.docx` formatting issues, including heading hierarchy, fonts, font sizes, paragraph indentation, line spacing, punctuation, and table layout. Document processing is local only; files are not uploaded or collected.
 
-Current changes include:
+### What's new in v1.0.3
+
+- Each of the three built-in presets now has an **Edit** button.
+- Changes are saved independently, persist across restarts, and can be reset to each preset's defaults.
+- Unchanged settings retain their original values, including NBC date styles, footnotes, and header/footer distances.
+- Release download instructions are reorganized, with macOS builds documented alongside Windows and Linux.
+
+Other features include:
 
 - Project name, software title, and window title are unified as `NBC_DocFormat`
 - NBC format preset is included
@@ -32,7 +41,7 @@ Current changes include:
 - Line spacing can be configured by multiple or fixed point value
 - Punctuation repair checks the `·` character and applies the required font handling
 - Feature-card images and the UI theme are updated to a blue style
-- Four client builds are provided: Windows 10/11, Windows 7/8 compatible, Linux x86_64, and Linux ARM64
+- Six client builds are available for Windows, Linux, and macOS; see the table below
 
 ## Interface Preview
 
@@ -40,9 +49,9 @@ Current changes include:
   <img src="assets/screenshot.png" alt="NBC_DocFormat interface screenshot" width="900">
 </p>
 
-## Client Builds
+## Download And Installation
 
-Build outputs are placed in `NBC_DocFormat_release/`:
+Download the file for your system and processor from [GitHub Releases](https://github.com/0Joahua0/NBC_DocFormat/releases/latest). The `Source code` archives contain source files; use one of the client builds below to run the application directly.
 
 | System | File | Notes |
 |---|---|---|
@@ -50,14 +59,30 @@ Build outputs are placed in `NBC_DocFormat_release/`:
 | Windows 7/8 | `NBC_DocFormat_windows_win7.exe` | 64-bit compatible build; Windows 7 SP1 or later recommended |
 | Linux x86_64 | `NBC_DocFormat_linux_amd64.AppImage` | For x86_64 systems such as Intel, AMD, Zhaoxin, and Hygon |
 | Linux ARM64 | `NBC_DocFormat_linux_aarch64.AppImage` | For aarch64/ARM64 systems such as Phytium and Kunpeng |
+| macOS Intel | `NBC_DocFormat_macos_intel.dmg` | For Intel-based Macs |
+| macOS Apple Silicon | `NBC_DocFormat_macos_apple_silicon.dmg` | For Macs with M-series chips |
+
+On Windows, double-click the `.exe`. Use the compatibility build for Windows 7 SP1 / 8; 32-bit Windows is not supported.
+
+On macOS, open the `.dmg` and drag the app into Applications. If the first launch is blocked, use **System Settings → Privacy & Security → Open Anyway**.
 
 ## Usage
 
 1. Select one or more `.docx` files.
 2. Choose a mode: smart one-click processing, format diagnosis, or punctuation repair.
 3. Choose a preset, such as the NBC format preset.
-4. Adjust custom settings when needed.
+4. Click **编辑 (Edit)** on a preset card to adjust its settings, then click **保存设置 (Save Settings)**.
 5. Start processing. The original files are not overwritten.
+
+### Editing And Resetting Presets
+
+- In smart processing mode, edit **GB/T official documents**, **academic papers**, or **NBC format** to adjust fonts, sizes, line spacing, margins, tables, and page numbers.
+- Saving updates only that preset and persists across restarts. Other built-in and custom presets are unaffected.
+- Click **恢复此预设默认值 (Restore Preset Defaults)** and save to reset a built-in preset.
+- To discard changes, close the editor and choose **No** when asked to save.
+- The **自定义 (Custom)** card manages separate templates, including creating, renaming, importing, and exporting presets.
+
+Use `.docx` files on all platforms. Windows can convert `.doc` / `.wps` through a locally installed Microsoft Office or WPS Office; on macOS and Linux, save those files as `.docx` first. Install the Chinese fonts required by your documents for consistent display.
 
 ## Linux Notes
 
