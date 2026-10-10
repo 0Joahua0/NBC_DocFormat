@@ -14,25 +14,45 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ['system', '3.11']
+        mode: ['baseline', 'no-emoji', 'sans-font', 'cjk-fonts']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        if: matrix.python != 'system'
         with:
-          python-version: ${{ matrix.python }}
+          python-version: '3.11'
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y python3-tk python3-venv xvfb xauth gdb
-          if [ '${{ matrix.python }}' = system ]; then
-            /usr/bin/python3 -m venv /tmp/ui-venv
-          else
-            python -m venv /tmp/ui-venv
+          if [ '${{ matrix.mode }}' = cjk-fonts ]; then
+            sudo apt-get install -y fonts-noto-cjk
           fi
+          python -m venv /tmp/ui-venv
           /tmp/ui-venv/bin/python -m pip install -r requirements-dev.txt
       - name: Inspect runtime and native backtrace
         run: |
           /tmp/ui-venv/bin/python --version
           xvfb-run -a /tmp/ui-venv/bin/python -c 'import tkinter as t; r=t.Tk(); print("Tcl:",r.tk.call("info","patchlevel"),"Tk:",r.tk.call("package","provide","Tk")); r.destroy()'
-          xvfb-run -a gdb -batch -ex run -ex 'thread apply all bt' --args /tmp/ui-venv/bin/python -m pytest -x -vv -s
+          cat > /tmp/diagnose.py <<'PY'
+          import os, sys, tkinter as tk
+          sys.path.insert(0, os.getcwd())
+          import NBC_DocFormat as app
+          import pytest
+          mode = '${{ matrix.mode }}'
+          if mode == 'sans-font':
+              app.get_font = lambda size=12, weight='normal': ('DejaVu Sans', size, weight)
+          if mode == 'no-emoji':
+              original = tk.Label.__init__
+              def label(self, *args, **kwargs):
+                  if 'text' in kwargs:
+                      kwargs['text'] = ''.join(c for c in kwargs['text'] if ord(c) < 0x10000 and c not in '\ufe0f\u20e3')
+                  return original(self, *args, **kwargs)
+              tk.Label.__init__ = label
+          create = app.CustomSettingsDialog._create_adv_element_row
+          def row(self, parent, pad_x, key, *args):
+              print('Creating advanced row:', key, flush=True)
+              return create(self, parent, pad_x, key, *args)
+          app.CustomSettingsDialog._create_adv_element_row = row
+          sys.exit(pytest.main(['-x', '-vv', '-s']))
+          PY
+          xvfb-run -a gdb -batch -ex run -ex 'thread apply all bt' --args /tmp/ui-venv/bin/python /tmp/diagnose.py
