@@ -1,0 +1,38 @@
+name: Diagnose Linux UI
+
+on:
+  push:
+    branches: ['codex/diagnose-linux-ui']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['system', '3.11']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        if: matrix.python != 'system'
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk python3-venv xvfb xauth gdb
+          if [ '${{ matrix.python }}' = system ]; then
+            /usr/bin/python3 -m venv /tmp/ui-venv
+          else
+            python -m venv /tmp/ui-venv
+          fi
+          /tmp/ui-venv/bin/python -m pip install -r requirements-dev.txt
+      - name: Inspect runtime and native backtrace
+        run: |
+          /tmp/ui-venv/bin/python --version
+          xvfb-run -a /tmp/ui-venv/bin/python -c 'import tkinter as t; r=t.Tk(); print("Tcl:",r.tk.call("info","patchlevel"),"Tk:",r.tk.call("package","provide","Tk")); r.destroy()'
+          xvfb-run -a gdb -batch -ex run -ex 'thread apply all bt' --args /tmp/ui-venv/bin/python -m pytest -x -vv -s
