@@ -127,7 +127,7 @@ except Exception as e:
     _DND_DISABLED_REASON = f"拖拽运行库不可用：{e}"
     _DND_AVAILABLE = False
 
-__version__ = '1.0.4'
+__version__ = '1.0.5'
 
 def resource_path(*parts):
     """返回源码运行或 PyInstaller 打包后的资源路径。"""
@@ -224,6 +224,18 @@ class Theme:
 def get_font(size=12, weight='normal'):
     """获取宋体字体"""
     return (Theme.FONT_SERIF[0], size, weight)
+
+
+def _ui_text(text):
+    """Use plain UI decorations on Linux's older Tk/Xft font stacks.
+
+    Emoji labels reproducibly crash Tk 8.6.12 on Ubuntu 22.04, including
+    with CJK fonts installed. Only pass application-owned labels here;
+    document text, paths and user input must retain their original content.
+    """
+    if sys.platform.startswith('linux'):
+        return ''.join(c for c in text if ord(c) <= 0xffff and c not in '\ufe0f\u20e3')
+    return text
 
 
 class AboutDialog(tk.Toplevel):
@@ -960,7 +972,7 @@ class CustomSettingsDialog(tk.Toplevel):
         header.pack(fill='x', padx=20, pady=(15, 5))
         
         tk.Label(
-            header, text=f"⚙️ {self.settings_title}", font=get_font(16, 'bold'),
+            header, text=_ui_text("⚙️ ") + self.settings_title, font=get_font(16, 'bold'),
             bg=Theme.BG, fg=Theme.TEXT
         ).pack(side='left')
         
@@ -1014,7 +1026,7 @@ class CustomSettingsDialog(tk.Toplevel):
         # ============================================================
         
         # --- 页面边距 ---
-        self._create_section(main, "📄 页面边距 (cm)", pad_x)
+        self._create_section(main, _ui_text("📄 页面边距 (cm)"), pad_x)
         margin_frame = tk.Frame(main, bg=Theme.BG)
         margin_frame.pack(fill='x', pady=(0, 12), padx=pad_x)
         
@@ -1030,7 +1042,7 @@ class CustomSettingsDialog(tk.Toplevel):
             tk.Entry(f, textvariable=var, font=get_font(11), width=6, relief='solid', bd=1).pack(side='left', padx=3)
         
         # --- 标题格式 ---
-        self._create_section(main, "📝 标题", pad_x)
+        self._create_section(main, _ui_text("📝 标题"), pad_x)
         title_frame = tk.Frame(main, bg=Theme.BG)
         title_frame.pack(fill='x', pady=(0, 12), padx=pad_x)
         
@@ -1063,7 +1075,7 @@ class CustomSettingsDialog(tk.Toplevel):
         ).pack(side='left', padx=(10, 0))
         
         # --- 各级标题 ---
-        self._create_section(main, "🔤 各级标题字体", pad_x)
+        self._create_section(main, _ui_text("🔤 各级标题字体"), pad_x)
         heading_frame = tk.Frame(main, bg=Theme.BG)
         heading_frame.pack(fill='x', pady=(0, 12), padx=pad_x)
         
@@ -1148,7 +1160,7 @@ class CustomSettingsDialog(tk.Toplevel):
         ).pack(side='left', padx=(10, 0))
         
         # --- 正文格式 ---
-        self._create_section(main, "📖 正文格式", pad_x)
+        self._create_section(main, _ui_text("📖 正文格式"), pad_x)
         body_frame = tk.Frame(main, bg=Theme.BG)
         body_frame.pack(fill='x', pady=(0, 12), padx=pad_x)
         
@@ -1232,7 +1244,7 @@ class CustomSettingsDialog(tk.Toplevel):
                  font=get_font(9), bg=Theme.BG, fg=Theme.TEXT_MUTED).pack(side='left', padx=(10, 0))
         
         # --- 表格格式 ---
-        self._create_section(main, "📊 表格格式", pad_x)
+        self._create_section(main, _ui_text("📊 表格格式"), pad_x)
         table_frame = tk.Frame(main, bg=Theme.BG)
         table_frame.pack(fill='x', pady=(0, 12), padx=pad_x)
         
@@ -1522,7 +1534,7 @@ class CustomSettingsDialog(tk.Toplevel):
                   **btn_style).pack(side='left', padx=2)
         tk.Button(bar, text='✎ 重命名', command=self._on_rename_preset,
                   **btn_style).pack(side='left', padx=2)
-        tk.Button(bar, text='🗑 删除', command=self._on_delete_preset,
+        tk.Button(bar, text=_ui_text('🗑 删除'), command=self._on_delete_preset,
                   **btn_style).pack(side='left', padx=2)
 
         # 分隔
@@ -1818,15 +1830,15 @@ class CustomSettingsDialog(tk.Toplevel):
         
         # 元素类型列表
         elements = [
-            ('recipient', '🏢 主送机关', '仿宋_GB2312', 16),
-            ('heading1',  '1️⃣  一级标题 (一、)', '黑体', 16),
-            ('heading2',  '2️⃣  二级标题 ((一))', '楷体_GB2312', 16),
-            ('heading3',  '3️⃣  三级标题 (1.)', '仿宋_GB2312', 16),
-            ('heading4',  '4️⃣  四级标题 ((1))', '仿宋_GB2312', 16),
-            ('attachment', '📎 附件', '仿宋_GB2312', 16),
-            ('closing',   '🧾 结束语', '仿宋_GB2312', 16),
-            ('signature', '✒️  落款单位', '仿宋_GB2312', 16),
-            ('date',      '📅 落款日期', '仿宋_GB2312', 16),
+            ('recipient', _ui_text('🏢 主送机关'), '仿宋_GB2312', 16),
+            ('heading1',  _ui_text('1️⃣  一级标题 (一、)'), '黑体', 16),
+            ('heading2',  _ui_text('2️⃣  二级标题 ((一))'), '楷体_GB2312', 16),
+            ('heading3',  _ui_text('3️⃣  三级标题 (1.)'), '仿宋_GB2312', 16),
+            ('heading4',  _ui_text('4️⃣  四级标题 ((1))'), '仿宋_GB2312', 16),
+            ('attachment', _ui_text('📎 附件'), '仿宋_GB2312', 16),
+            ('closing',   _ui_text('🧾 结束语'), '仿宋_GB2312', 16),
+            ('signature', _ui_text('✒️  落款单位'), '仿宋_GB2312', 16),
+            ('date',      _ui_text('📅 落款日期'), '仿宋_GB2312', 16),
         ]
         
         for key, label, default_font, default_size in elements:
@@ -2515,7 +2527,7 @@ class PasteTextDialog(tk.Toplevel):
         header.pack(fill='x', padx=20, pady=(15, 8))
 
         tk.Label(
-            header, text="📋 从文本生成 docx", font=get_font(16, 'bold'),
+            header, text=_ui_text("📋 从文本生成 docx"), font=get_font(16, 'bold'),
             bg=Theme.BG, fg=Theme.TEXT
         ).pack(side='left')
 
@@ -2636,7 +2648,7 @@ class PasteTextDialog(tk.Toplevel):
         save_entry.pack(side='left', fill='x', expand=True, ipady=3)
 
         browse_btn = tk.Label(
-            save_row, text=" 📁 浏览 ", font=get_font(11),
+            save_row, text=_ui_text(" 📁 浏览 "), font=get_font(11),
             bg=Theme.BG, fg=Theme.PRIMARY, cursor='hand2',
             padx=8, pady=4,
         )
@@ -2722,7 +2734,7 @@ class PasteTextDialog(tk.Toplevel):
         format_hint = ""
         if char_count > 20:
             is_md = _detect_markdown(text)
-            format_hint = " · 📝 Markdown 格式" if is_md else " · 纯文本"
+            format_hint = _ui_text(" · 📝 Markdown 格式") if is_md else " · 纯文本"
         self.stats_label.configure(
             text=f"ⓘ 已粘贴 {char_count} 字 · {para_count} 段{format_hint}"
         )
@@ -4355,7 +4367,7 @@ class DocFormatApp:
 
         paste_btn = tk.Label(
             paste_row,
-            text="📋 没有文件？粘贴文本生成 docx",
+            text=_ui_text("📋 没有文件？粘贴文本生成 docx"),
             font=get_font(11),
             bg=Theme.BG, fg=Theme.PRIMARY,
             cursor='hand2', anchor='w', padx=4,
@@ -4368,7 +4380,7 @@ class DocFormatApp:
         folder_row = tk.Frame(file_section, bg=Theme.BG)
         folder_row.pack(fill='x', pady=(0, Theme.SPACE_SM))
         tk.Button(
-            folder_row, text='📁 选择文件夹',
+            folder_row, text=_ui_text('📁 选择文件夹'),
             command=self._on_select_folder,
             bg=Theme.BG, fg=Theme.TEXT_SECONDARY,
             font=get_font(11), relief='flat', cursor='hand2',
@@ -4468,7 +4480,7 @@ class DocFormatApp:
         
         # 自定义卡片 - 点击直接打开设置窗口
         self.custom_card = PresetCard(
-            preset_row, '⚙️ 自定义', 'custom', self.preset,
+            preset_row, _ui_text('⚙️ 自定义'), 'custom', self.preset,
             command=self._open_custom_settings  # 点击时打开设置窗口
         )
         self.custom_card.pack(side='left', padx=(Theme.SPACE_SM, 0))
@@ -4892,7 +4904,7 @@ class DocFormatApp:
 
         # 显示在输入框（用更友好的名称）
         self.input_field.filename_label.configure(
-            text=f"📋 文本生成: {title[:30]}",
+            text=_ui_text("📋 文本生成: ") + title[:30],
             fg=Theme.TEXT,
         )
         self.output_field.filename_label.configure(

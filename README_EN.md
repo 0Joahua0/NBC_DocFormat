@@ -26,8 +26,10 @@ Thanks to the original author for the document-formatting foundation, desktop im
 
 NBC_DocFormat processes common `.docx` formatting issues, including heading hierarchy, fonts, font sizes, paragraph indentation, line spacing, punctuation, and table layout. Document processing is local only; files are not uploaded or collected.
 
-### What's new in v1.0.4
+### What's new in v1.0.5
 
+- Replaced decorative emoji in Linux UI labels with plain text to avoid a reproducible Ubuntu 22.04 / Tk 8.6.12 crash. Document content and user input are preserved. Whether this also resolves the Kylin blank-window report remains unverified.
+- v1.0.4 failed the Linux pre-release tests and was not published as a Release; its changes are included below.
 - Added x86_64 / ARM64 `.deb` installers with application-menu integration, window icons, and taskbar matching.
 - Linux builds use a directory bundle; installed `.deb` applications no longer extract libraries into a new temporary directory on each launch.
 - Adjusted the paste-text and preset-editor dialog lifecycle and added initialization, widget-state, and exception diagnostics.
@@ -96,7 +98,7 @@ Use `.docx` files on all platforms. Windows can convert `.doc` / `.wps` through 
 
 ## Linux Notes
 
-Version v1.0.4 adds `.deb` installers. Older release AppImages do not receive these changes automatically.
+Version v1.0.5 adds `.deb` installers. Older release AppImages do not receive these changes automatically.
 For Kylin V11 x86_64 or Debian-based desktops, install `NBC_DocFormat_linux_amd64.deb`
 with the system package installer, or run:
 

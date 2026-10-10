@@ -102,6 +102,27 @@ def test_application_icon_is_loaded_and_retained(root):
     assert root.winfo_class() == 'Nbc_docformat'
 
 
+def test_main_window_and_its_dialogs_render(root):
+    app.DocFormatApp(root)
+    root.update()
+    for dialog_class in (app.PasteTextDialog, app.CustomSettingsDialog):
+        dialog = app._open_dialog(root, dialog_class)
+        root.update()
+        assert dialog is not None
+        assert dialog.winfo_viewable()
+        assert dialog.winfo_children()
+        dialog.destroy()
+        root.update()
+
+
+def test_docx_generation_preserves_supplementary_unicode(tmp_path):
+    output = tmp_path / 'unicode.docx'
+    title = '𠮷野的通知 📋'
+    body = '文档正文保留 emoji 🧾 和扩展汉字𠮷。'
+    app._create_docx_from_text(title, body, output)
+    assert [p.text for p in Document(output).paragraphs if p.text] == [title, body]
+
+
 @pytest.mark.parametrize('dialog_class, builder', [
     (app.PasteTextDialog, '_build_ui'),
     (app.CustomSettingsDialog, '_create_widgets'),
