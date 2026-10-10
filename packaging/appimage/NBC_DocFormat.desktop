@@ -6,3 +6,4 @@ Icon=NBC_DocFormat
 Type=Application
 Categories=Office;WordProcessor;
 Terminal=false
+StartupWMClass=Nbc_docformat

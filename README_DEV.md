@@ -89,8 +89,8 @@ helper 或 `root.after()` 返回主线程。当前仍有少量 Tk 变量的 `.ge
 
 ## 关于 custom_settings.json
 
-仓库里这个文件是**源码运行模式（`python NBC_DocFormat.py` / `bash install.sh`）的默认配置**，
-内容与代码里的 DEFAULT_CUSTOM_SETTINGS 保持一致。
+仓库里这个文件用于兼容旧版配置迁移，内容与代码里的 DEFAULT_CUSTOM_SETTINGS 保持一致。
+源码与打包模式均优先读取下述用户配置目录。
 
 ### 内置预设编辑（v1.0.3）
 
@@ -110,24 +110,58 @@ GUI 的标点处理和文档格式化均通过 `get_format_settings()` 读取有
 
 ### 给开发者的提示
 
-该文件会随源码一起提交，作为源码运行模式的默认配置。**如果你在调试时通过 GUI 保存了自定义设置，
-会改动本地这个文件；提交前请确认它仍然是干净的默认值**，避免把个人调试配置误提交。
+该文件会随源码一起提交，作为旧版迁移的默认配置。调试或测试时请将 CONFIG_FILE 指向临时目录，
+避免覆盖本机用户的配置，也避免将个人调试配置写回仓库。
 
 如果你确实要修改这份"默认配置"（比如调整 DEFAULT_CUSTOM_SETTINGS 后想同步到这里），
 请一并更新代码中的默认值和相关测试。
 
 ### 用户配置文件的实际位置
 
-- Windows/Linux 打包发布版：exe 同目录
-- macOS 打包发布版：~/Library/Application Support/NBC_DocFormat/
-- 开发模式（python 直接运行）：项目根目录（即这个文件本身）
+- Windows：%APPDATA%/NBC_DocFormat/
+- Linux：${XDG_CONFIG_HOME:-~/.config}/NBC_DocFormat/
+- macOS：~/Library/Application Support/NBC_DocFormat/
+- 源码运行与打包模式相同；旧目录配置仅在首次迁移时读取。
+
+## Linux 窗口与安装包验证
+
+两个编辑弹窗先构建控件，再通过 `<Visibility>` 事件取得输入抓取。
+不要将 `grab_set()` 移到构造函数开头：部分 X11 桌面会以窗口不可见为由拒绝抓取，
+中断后续控件创建。回归测试必须运行在真实 Tk 显示环境，不能只模拟 `sys.platform`：
+
+```bash
+xvfb-run -a python -m pytest -q
+```
+
+Linux 使用 PyInstaller 6+ 的 `--onedir` 目录包，AppImage 和 `.deb` 共用它。
+发布流水线在 AlmaLinux 8（glibc 2.28）构建，再在 Ubuntu 上封装 `.deb`，
+避免在新发行版编译后依赖过新的 glibc。不要把 `--onefile` 产物直接套进 `.deb`，
+否则每次运行仍会将共享库解压到随机路径。
+
+```bash
+python build.py linux
+bash packaging/appimage/build-appimage.sh dist/NBC_DocFormat_linux assets/icon.png NBC_DocFormat_linux_amd64
+# 将同一目录包带到有 dpkg-deb 的环境；这里不会重新编译二进制。
+bash packaging/linux/build-deb.sh dist/NBC_DocFormat_linux amd64
+```
+
+ARM64 对应 AppImage 名为 `aarch64`、Debian 架构名为 `arm64`，输入目录包必须是对应架构。
+发布前在麒麟 V11 虚拟机验证安装、菜单图标、两个弹窗、DOCX 生成、预设保存和重启、卸载。
+自动化测试验证 X11 窗口及 Debian 包结构，不替代麒麟安全中心与签名策略的实机验证。
+
+麒麟白框问题仍待实机日志确认。`_open_dialog()` 记录运行环境并捕获构造异常；
+`_dialog_stage()` 在初始化关键调用前后写入 `CONFIG_FILE.parent/ui_diagnostics.log`，
+`_record_dialog_state()` 在显示请求返回后和事件循环继续运行后记录控件结构状态。
+没有 traceback 时，先对比最后一条阶段日志，再检查是否存在后续 `dialog_state`。
+控件 `viewable=True` 只说明 Tk 已映射，不能据此排除窗口管理器或虚拟机绘制问题。
+日志写入失败不得影响窗口打开；关闭窗口时应取消延迟诊断回调。
 
 ## 版本与发布
 
 1. 同步 `NBC_DocFormat.py::__version__`、`build.py::VERSION` 和版本检查测试。
 2. 更新中英文 README 及 `packaging/RELEASE_NOTES.md` 中的本次更新内容。
 3. 执行 `python -m pytest -q`。确认 `custom_settings.json` 未混入个人配置。
-4. 提交代码并推送 `vX.Y.Z` 标签，GitHub Actions 会构建六个平台产物并创建 Release。
+4. 提交代码并推送 `vX.Y.Z` 标签，GitHub Actions 会构建各平台产物（Linux 含 AppImage 和 `.deb`）并创建 Release。
 
 `build.create_release_notes()` 从统一 Markdown 模板生成 `dist/RELEASE_NOTES.md`，
 替换 `{{VERSION}}` 与 `{{REPOSITORY}}`。GitHub 发布步骤使用 `body_path` 读取该文件，

@@ -127,12 +127,21 @@ except Exception as e:
     _DND_DISABLED_REASON = f"拖拽运行库不可用：{e}"
     _DND_AVAILABLE = False
 
-__version__ = '1.0.3'
+__version__ = '1.0.4'
 
 def resource_path(*parts):
     """返回源码运行或 PyInstaller 打包后的资源路径。"""
     base = Path(getattr(sys, '_MEIPASS', PROJECT_ROOT))
     return base.joinpath(*parts)
+
+
+def _set_window_icon(root):
+    """PNG 同时供 Linux 窗口、任务栏和后续子窗口使用。"""
+    try:
+        root._nbc_icon = tk.PhotoImage(master=root, file=str(resource_path('assets', 'icon.png')))
+        root.iconphoto(True, root._nbc_icon)
+    except (tk.TclError, OSError) as error:
+        print(f"[警告] 窗口图标加载失败: {error}")
 
 def _open_file(path):
     """跨平台打开文件"""
@@ -701,8 +710,113 @@ def _changed_settings(before, after):
     return changes
 
 
+def _write_ui_diagnostic(event, **details):
+    """记录界面生命周期，不读取正文或设置表单；写日志失败不影响界面。"""
+    import json
+    path = CONFIG_FILE.parent / 'ui_diagnostics.log'
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and path.stat().st_size >= 1024 * 1024:
+            path.replace(path.with_suffix('.log.1'))
+        record = {'time': time.strftime('%Y-%m-%d %H:%M:%S'),
+                  'pid': os.getpid(), 'event': event, **details}
+        with path.open('a', encoding='utf-8') as stream:
+            stream.write(json.dumps(record, ensure_ascii=False) + '\n')
+        return path
+    except OSError:
+        return None
+
+
+def _dialog_stage(dialog, stage):
+    dialog._ui_stage = stage
+    _write_ui_diagnostic('dialog_stage', dialog=type(dialog).__name__,
+                         window=str(dialog), stage=stage)
+
+
+def _record_dialog_state(dialog):
+    """记录 Tk 是否创建、映射了控件；这不等同于验证屏幕像素已绘制。"""
+    try:
+        pending = list(dialog.winfo_children())
+        counts = {}
+        visible = 0
+        while pending:
+            widget = pending.pop()
+            kind = widget.winfo_class()
+            counts[kind] = counts.get(kind, 0) + 1
+            visible += bool(widget.winfo_viewable())
+            pending.extend(widget.winfo_children())
+        content = {}
+        for name in ('canvas', 'content_frame', 'body_canvas', 'text_widget'):
+            widget = getattr(dialog, name, None)
+            if widget is not None:
+                content[name] = {'geometry': widget.winfo_geometry(),
+                                 'viewable': bool(widget.winfo_viewable())}
+        _write_ui_diagnostic(
+            'dialog_state', dialog=type(dialog).__name__, window=str(dialog),
+            stage=getattr(dialog, '_ui_stage', 'unknown'),
+            geometry=dialog.winfo_geometry(), viewable=bool(dialog.winfo_viewable()),
+            widget_counts=counts, viewable_widgets=visible, content=content,
+        )
+    except tk.TclError:
+        # 用户可能已关闭窗口。
+        pass
+
+
+def _report_ui_error(root, context, error_info):
+    import traceback
+    detail = ''.join(traceback.format_exception(*error_info))
+    path = _write_ui_diagnostic('ui_error', context=context, traceback=detail)
+    if sys.stderr is not None:
+        print(detail, file=sys.stderr)
+    if getattr(root, '_reporting_ui_error', False):
+        return
+    root._reporting_ui_error = True
+    try:
+        location = f'诊断日志：{path}' if path else '诊断日志写入失败，请检查用户配置目录的权限。'
+        messagebox.showerror(
+            '界面加载失败',
+            f'{context}\n\n{error_info[0].__name__}: {error_info[1]}\n\n{location}',
+            parent=root,
+        )
+    except tk.TclError:
+        pass
+    finally:
+        root._reporting_ui_error = False
+
+
+def _open_dialog(parent, dialog_class, **kwargs):
+    """构造失败时清理本次残留窗口，并报告真实异常而非留下空框。"""
+    before = set(parent.winfo_children())
+    _write_ui_diagnostic('dialog_open', dialog=dialog_class.__name__)
+    try:
+        _write_ui_diagnostic(
+            'ui_environment', version=__version__, system=sys.platform,
+            python=sys.version.split()[0], frozen=bool(getattr(sys, 'frozen', False)),
+            tcl=str(parent.tk.call('info', 'patchlevel')),
+            tk=str(parent.tk.call('package', 'provide', 'Tk')),
+            windowing_system=str(parent.tk.call('tk', 'windowingsystem')),
+            session_type=os.environ.get('XDG_SESSION_TYPE', ''),
+            screen=[parent.winfo_screenwidth(), parent.winfo_screenheight()],
+            scaling=float(parent.tk.call('tk', 'scaling')),
+        )
+        return dialog_class(parent, **kwargs)
+    except Exception:
+        error_info = sys.exc_info()
+        stage = '创建窗口'
+        for child in set(parent.winfo_children()) - before:
+            if isinstance(child, dialog_class):
+                stage = getattr(child, '_ui_stage', stage)
+                try:
+                    child.destroy()
+                except tk.TclError:
+                    pass
+        _report_ui_error(parent, f'{dialog_class.__name__}：{stage}', error_info)
+        return None
+
+
 def _fit_dialog_to_screen(dialog, parent, desired_w, desired_h, min_w, min_h):
     """让弹窗按屏幕可用空间自动取尺寸并居中显示。"""
+    _dialog_stage(dialog, '更新弹窗布局')
     dialog.update_idletasks()
     screen_w = dialog.winfo_screenwidth()
     screen_h = dialog.winfo_screenheight()
@@ -715,6 +829,7 @@ def _fit_dialog_to_screen(dialog, parent, desired_w, desired_h, min_w, min_h):
     dialog.minsize(min(min_w, win_w), min(min_h, win_h))
 
     try:
+        _dialog_stage(dialog, '更新父窗口布局')
         parent.update_idletasks()
         parent_w = parent.winfo_width()
         parent_h = parent.winfo_height()
@@ -729,7 +844,45 @@ def _fit_dialog_to_screen(dialog, parent, desired_w, desired_h, min_w, min_h):
     x = max(0, min(x, screen_w - win_w))
     y = max(0, min(y, screen_h - win_h))
     dialog.geometry(f"{int(win_w)}x{int(win_h)}+{int(x)}+{int(y)}")
+    _dialog_stage(dialog, '窗口尺寸已设置')
 
+
+def _show_modal_dialog(dialog):
+    """控件构建完成且窗口可见后才抓取输入，兼容 X11 的映射时序。
+
+    使用可见事件而非同步 wait_visibility，避免父窗口隐藏或窗口在映射前
+    关闭时阻塞调用方。子控件事件也会传播到顶层，必须过滤。
+    """
+    def on_visible(event=None):
+        if event is not None and event.widget is not dialog:
+            return
+        if not dialog.winfo_viewable():
+            return
+        dialog.unbind('<Visibility>', binding)
+        try:
+            _dialog_stage(dialog, '窗口可见，准备抓取输入')
+            dialog.grab_set()
+            _dialog_stage(dialog, '输入抓取完成')
+        except tk.TclError as error:
+            # 窗口管理器拒绝抓取时仍保留完整可操作的界面。
+            _write_ui_diagnostic('dialog_grab_failed', dialog=type(dialog).__name__, error=str(error))
+            print(f"[警告] 弹窗输入抓取失败: {error}")
+
+    binding = dialog.bind('<Visibility>', on_visible, add='+')
+    _dialog_stage(dialog, '控件已创建，准备显示窗口')
+    dialog.deiconify()
+    _dialog_stage(dialog, '显示请求已返回')
+    if dialog.winfo_viewable():
+        on_visible()
+    # 先记录一次，再等事件循环处理布局后记录；卡住时也能留下最后阶段。
+    _record_dialog_state(dialog)
+    snapshot_id = dialog.after(500, lambda: _record_dialog_state(dialog))
+
+    def cancel_snapshot(event):
+        if event.widget is dialog:
+            dialog.after_cancel(snapshot_id)
+
+    dialog.bind('<Destroy>', cancel_snapshot, add='+')
 
 
 # ===== 快速设置中，正文字体联动的元素 =====
@@ -745,10 +898,13 @@ class CustomSettingsDialog(tk.Toplevel):
     
     def __init__(self, parent, on_save=None, preset_id=None):
         super().__init__(parent)
+        _dialog_stage(self, '窗口已创建，准备初始化')
+        self.withdraw()
         self.dialog = self
         
         self.on_save = on_save
         self.builtin_preset_id = preset_id
+        _dialog_stage(self, '读取预设配置')
         self._config = load_custom_settings()
         self.settings = (get_format_settings(preset_id, self._config) if preset_id
                          else get_active_user_preset(self._config))
@@ -757,6 +913,7 @@ class CustomSettingsDialog(tk.Toplevel):
         self._adv_vars = {}  # 高级模式的变量存储
         
         # 窗口设置
+        _dialog_stage(self, '设置窗口属性')
         self.settings_title = f"编辑{self.settings['name']}" if preset_id else "自定义格式设置"
         self.title(self.settings_title)
         self.configure(bg=Theme.BG)
@@ -764,7 +921,6 @@ class CustomSettingsDialog(tk.Toplevel):
         
         # 模态窗口
         self.transient(parent)
-        self.grab_set()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         
         _fit_dialog_to_screen(
@@ -773,12 +929,16 @@ class CustomSettingsDialog(tk.Toplevel):
             min_w=1040, min_h=720
         )
         
+        _dialog_stage(self, '创建设置控件')
         self._create_widgets()
+        _dialog_stage(self, '设置控件创建完成，准备填充值')
         if not preset_id:
             self._refresh_preset_list()
         self.update_idletasks()   # 确保所有控件完成布局
         self._load_values()
+        _dialog_stage(self, '设置值载入完成')
         self.after_idle(self._load_values)  # 事件循环空闲后再刷新一次，兜底
+        _show_modal_dialog(self)
     
     # ==================== 界面构建 ====================
 
@@ -2323,15 +2483,18 @@ class PasteTextDialog(tk.Toplevel):
 
     def __init__(self, parent, on_generate=None):
         super().__init__(parent)
+        self._stats_after_id = None
+        _dialog_stage(self, '窗口已创建，准备初始化')
+        self.withdraw()
         self.on_generate = on_generate
 
+        _dialog_stage(self, '设置窗口属性')
         self.title("从文本生成 docx")
         self.configure(bg=Theme.BG)
         self.resizable(True, True)
 
         # 模态
         self.transient(parent)
-        self.grab_set()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         _fit_dialog_to_screen(
@@ -2340,7 +2503,10 @@ class PasteTextDialog(tk.Toplevel):
             min_w=640, min_h=560
         )
 
+        _dialog_stage(self, '创建粘贴文本控件')
         self._build_ui()
+        _dialog_stage(self, '粘贴文本控件创建完成')
+        _show_modal_dialog(self)
 
     def _build_ui(self):
         """构建 UI。"""
@@ -2529,7 +2695,15 @@ class PasteTextDialog(tk.Toplevel):
             self.text_widget.configure(fg=Theme.TEXT)
             self._placeholder_active = False
         # 粘贴是异步的，延迟更新
-        self.after(50, self._update_stats)
+        if self._stats_after_id is not None:
+            self.after_cancel(self._stats_after_id)
+        self._stats_after_id = self.after(50, self._update_stats)
+
+    def destroy(self):
+        if self._stats_after_id is not None:
+            self.after_cancel(self._stats_after_id)
+            self._stats_after_id = None
+        super().destroy()
 
     def _update_stats(self, event=None):
         """更新字数/段数统计。"""
@@ -4065,6 +4239,7 @@ class DocFormatApp:
     def __init__(self, root):
         self.root = root
         self.root.title("NBC_DocFormat")
+        _set_window_icon(self.root)
         _init_system_fonts()
         self._set_initial_window_geometry()
         self.root.configure(bg=Theme.BG)
@@ -4673,7 +4848,7 @@ class DocFormatApp:
             self.preset.set(preset_id)
             self.log_panel.log(f"{settings['name']}设置已保存", 'success')
 
-        CustomSettingsDialog(self.root, on_save=on_save, preset_id=preset_id)
+        _open_dialog(self.root, CustomSettingsDialog, on_save=on_save, preset_id=preset_id)
 
     def _open_custom_settings(self):
         """打开自定义设置窗口"""
@@ -4681,11 +4856,11 @@ class DocFormatApp:
             self.preset.set('custom')
             self.log_panel.log("自定义格式设置已保存", 'success')
         
-        CustomSettingsDialog(self.root, on_save=on_save)
+        _open_dialog(self.root, CustomSettingsDialog, on_save=on_save)
 
     def _open_paste_dialog(self):
         """打开粘贴文本对话框。"""
-        PasteTextDialog(self.root, on_generate=self._on_text_generated)
+        _open_dialog(self.root, PasteTextDialog, on_generate=self._on_text_generated)
 
     def _on_text_generated(self, title, body_text, output_path, is_markdown=False):
         """粘贴对话框生成 docx 后的回调：触发主流程格式化。"""
@@ -5326,18 +5501,19 @@ def main():
     
     if _DND_AVAILABLE:
         try:
-            root = TkinterDnD.Tk()
+            root = TkinterDnD.Tk(className='NBC_DocFormat')
         except Exception as e:
             # 某些打包环境下 python 模块可导入，但 tkdnd 运行库实际缺失。
             # 这里自动降级到普通 Tk，保证程序至少能启动使用。
             print(f"[警告] 拖拽运行库加载失败，已降级为普通模式: {e}")
             _DND_AVAILABLE = False
-            root = tk.Tk()
+            root = tk.Tk(className='NBC_DocFormat')
     else:
         if getattr(sys, 'frozen', False) and sys.platform == 'darwin':
             print("[信息] macOS 打包版当前默认关闭拖拽功能，以优先保证应用可正常启动。")
-        root = tk.Tk()
+        root = tk.Tk(className='NBC_DocFormat')
     _configure_tk_high_dpi(root)
+    root.report_callback_exception = lambda *error_info: _report_ui_error(root, '界面事件处理', error_info)
     app = DocFormatApp(root)
     root.mainloop()
 

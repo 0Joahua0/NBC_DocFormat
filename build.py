@@ -32,7 +32,7 @@ _configure_console_encoding()
 # 配置
 APP_NAME = "NBC_DocFormat"
 APP_NAME_EN = "NBC_DocFormat"
-VERSION = "1.0.3"
+VERSION = "1.0.4"
 MAIN_SCRIPT = "NBC_DocFormat.py"
 MACOS_APP_BUNDLE_NAME = os.environ.get("MACOS_APP_BUNDLE_NAME", "NBC_DocFormat").strip()
 
@@ -460,6 +460,7 @@ def build_windows():
         "--clean",
         # 添加数据文件
         "--add-data=scripts;scripts",
+        "--add-data=assets/icon.png;assets",
         "--add-data=assets/feature_smart.png;assets",
         "--add-data=assets/feature_analyze.png;assets",
         "--add-data=assets/feature_punctuation.png;assets",
@@ -493,7 +494,7 @@ def build_windows():
 
 
 def build_linux():
-    """构建 Linux 版本"""
+    """构建 Linux 目录包，供 AppImage 和固定路径安装包共用。"""
     print("\n" + "=" * 50)
     print("构建 Linux 版本")
     print("=" * 50)
@@ -506,10 +507,11 @@ def build_linux():
     
     cmd = [
         "pyinstaller",
-        "--onefile",
+        "--onedir",
         f"--name={output_name}",
         "--clean",
         "--add-data=scripts:scripts",
+        "--add-data=assets/icon.png:assets",
         "--add-data=assets/feature_smart.png:assets",
         "--add-data=assets/feature_analyze.png:assets",
         "--add-data=assets/feature_punctuation.png:assets",
@@ -527,11 +529,12 @@ def build_linux():
     result = subprocess.run(cmd, capture_output=False)
     
     if result.returncode == 0:
-        exe_path = DIST_DIR / output_name
+        bundle_path = DIST_DIR / output_name
+        exe_path = bundle_path / output_name
         if exe_path.exists():
-            size_mb = exe_path.stat().st_size / (1024 * 1024)
+            size_mb = sum(p.stat().st_size for p in bundle_path.rglob('*') if p.is_file()) / (1024 * 1024)
             print(f"\n✓ Linux 版本构建成功!")
-            print(f"  文件: {exe_path}")
+            print(f"  目录: {bundle_path}")
             print(f"  大小: {size_mb:.1f} MB")
             return True
     
@@ -565,6 +568,7 @@ def build_macos():
         "--osx-bundle-identifier=com.nbc.docformat",
         # macOS 路径分隔符与 Linux 相同
         "--add-data=scripts:scripts",
+        "--add-data=assets/icon.png:assets",
         "--add-data=assets/feature_smart.png:assets",
         "--add-data=assets/feature_analyze.png:assets",
         "--add-data=assets/feature_punctuation.png:assets",

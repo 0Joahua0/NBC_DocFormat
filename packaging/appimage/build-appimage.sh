@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 APPIMAGETOOL_VERSION=1.9.1
 
-BINARY="${1:-$REPO_ROOT/dist/NBC_DocFormat_linux}"
+BUNDLE="${1:-$REPO_ROOT/dist/NBC_DocFormat_linux}"
 ICON="${2:-$REPO_ROOT/assets/icon.png}"
 OUTPUT_NAME="${3:-NBC_DocFormat_linux}"
 OUTPUT="$REPO_ROOT/dist/${OUTPUT_NAME}.AppImage"
@@ -16,9 +16,10 @@ cleanup() {
   rm -rf "$APPDIR" "$TOOL_DIR"
 }
 trap cleanup EXIT
+chmod 755 "$APPDIR"
 
-if [ ! -f "$BINARY" ]; then
-  echo "✗ 找不到 PyInstaller 产物: $BINARY"
+if [ ! -x "$BUNDLE/NBC_DocFormat_linux" ] || [ ! -d "$BUNDLE/_internal" ]; then
+  echo "✗ 找不到 PyInstaller onedir 产物: $BUNDLE"
   exit 1
 fi
 if [ ! -f "$ICON" ]; then
@@ -46,8 +47,9 @@ case "$TOOL_ARCH" in
     ;;
 esac
 
-mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/icons/hicolor/256x256/apps"
-install -m 755 "$BINARY" "$APPDIR/usr/bin/NBC_DocFormat_linux"
+mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib/NBC_DocFormat" "$APPDIR/usr/share/icons/hicolor/256x256/apps"
+cp -a "$BUNDLE/." "$APPDIR/usr/lib/NBC_DocFormat/"
+ln -s ../lib/NBC_DocFormat/NBC_DocFormat_linux "$APPDIR/usr/bin/NBC_DocFormat_linux"
 install -m 644 "$ICON" "$APPDIR/usr/share/icons/hicolor/256x256/apps/NBC_DocFormat.png"
 install -m 644 "$ICON" "$APPDIR/NBC_DocFormat.png"
 install -m 644 "$SCRIPT_DIR/NBC_DocFormat.desktop" "$APPDIR/NBC_DocFormat.desktop"
@@ -56,7 +58,7 @@ cat > "$APPDIR/AppRun" <<'APPRUN'
 #!/bin/sh
 HERE="$(dirname "$(readlink -f "$0")")"
 export PATH="$HERE/usr/bin:$PATH"
-exec "$HERE/usr/bin/NBC_DocFormat_linux" "$@"
+exec "$HERE/usr/lib/NBC_DocFormat/NBC_DocFormat_linux" "$@"
 APPRUN
 chmod 755 "$APPDIR/AppRun"
 

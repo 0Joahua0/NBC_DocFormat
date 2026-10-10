@@ -26,6 +26,14 @@ Thanks to the original author for the document-formatting foundation, desktop im
 
 NBC_DocFormat processes common `.docx` formatting issues, including heading hierarchy, fonts, font sizes, paragraph indentation, line spacing, punctuation, and table layout. Document processing is local only; files are not uploaded or collected.
 
+### What's new in v1.0.4
+
+- Added x86_64 / ARM64 `.deb` installers with application-menu integration, window icons, and taskbar matching.
+- Linux builds use a directory bundle; installed `.deb` applications no longer extract libraries into a new temporary directory on each launch.
+- Adjusted the paste-text and preset-editor dialog lifecycle and added initialization, widget-state, and exception diagnostics.
+- The reported blank dialogs on Kylin V11 still require verification on that system; this release does not claim a confirmed fix.
+- Added a detailed [Chinese guide to format recognition](README.md#格式识别与排版逻辑), including rule priorities, thresholds, examples, and diagnostic limitations.
+
 ### What's new in v1.0.3
 
 - Each of the three built-in presets now has an **Edit** button.
@@ -57,6 +65,8 @@ Download the file for your system and processor from [GitHub Releases](https://g
 |---|---|---|
 | Windows 10/11 | `NBC_DocFormat_windows.exe` | Recommended for 64-bit Windows 10/11 |
 | Windows 7/8 | `NBC_DocFormat_windows_win7.exe` | 64-bit compatible build; Windows 7 SP1 or later recommended |
+| Kylin / Debian-based Linux x86_64 | `NBC_DocFormat_linux_amd64.deb` | Installer with application-menu integration |
+| Debian-based Linux ARM64 | `NBC_DocFormat_linux_arm64.deb` | ARM64 installer |
 | Linux x86_64 | `NBC_DocFormat_linux_amd64.AppImage` | For x86_64 systems such as Intel, AMD, Zhaoxin, and Hygon |
 | Linux ARM64 | `NBC_DocFormat_linux_aarch64.AppImage` | For aarch64/ARM64 systems such as Phytium and Kunpeng |
 | macOS Intel | `NBC_DocFormat_macos_intel.dmg` | For Intel-based Macs |
@@ -86,7 +96,27 @@ Use `.docx` files on all platforms. Windows can convert `.doc` / `.wps` through 
 
 ## Linux Notes
 
-Check your architecture first:
+Version v1.0.4 adds `.deb` installers. Older release AppImages do not receive these changes automatically.
+For Kylin V11 x86_64 or Debian-based desktops, install `NBC_DocFormat_linux_amd64.deb`
+with the system package installer, or run:
+
+```bash
+sudo apt install ./NBC_DocFormat_linux_amd64.deb
+```
+
+Launch **NBC_DocFormat** from the application menu after installation. The application
+and libraries stay under `/opt/nbc-docformat`, without extracting into a new temporary
+directory on every launch. Normal use does not require root. Settings live in
+`${XDG_CONFIG_HOME:-~/.config}/NBC_DocFormat` and are retained when upgrading or removing
+the package. Install a newer `.deb` to upgrade; use `sudo apt remove nbc-docformat` to
+uninstall. ARM64 users should choose `NBC_DocFormat_linux_arm64.deb`.
+
+This package is not signed by Kylin. Source verification or execution approval may
+still be required by the machine's security policy; managed machines may require
+administrator approval. The app does not change security policy. Kylin-specific
+compatibility and permission prompts still require validation on the target system.
+
+For the portable AppImage, check your architecture first:
 
 ```bash
 uname -m

@@ -16,6 +16,21 @@ on:
   workflow_dispatch:
 
 jobs:
+  test-linux-ui:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk xvfb xauth desktop-file-utils
+          python -m pip install -r requirements-dev.txt
+      - name: Test with an X11 display
+        run: xvfb-run -a python -m pytest -q
+
   build-windows:
     runs-on: windows-latest
     steps:
@@ -71,6 +86,7 @@ jobs:
           path: dist/NBC_DocFormat_windows_win7.exe
 
   build-linux:
+    needs: test-linux-ui
     runs-on: ubuntu-22.04
     container:
       image: almalinux:8
@@ -96,8 +112,9 @@ jobs:
         run: |
           export LC_ALL=zh_CN.UTF-8
           DOCX_TEMPLATES=$(python3.9 -c "import docx, os; print(os.path.join(os.path.dirname(docx.__file__), 'templates'))")
-          pyinstaller --onefile --name=NBC_DocFormat_linux \
+          pyinstaller --onedir --name=NBC_DocFormat_linux \
             --add-data "scripts:scripts" \
+            --add-data "assets/icon.png:assets" \
             --add-data "assets/feature_smart.png:assets" \
             --add-data "assets/feature_analyze.png:assets" \
             --add-data "assets/feature_punctuation.png:assets" \
@@ -106,6 +123,9 @@ jobs:
             --add-data "${DOCX_TEMPLATES}:docx/templates" \
             --hidden-import=docx --hidden-import=lxml \
             NBC_DocFormat.py
+
+      - name: Archive installed-layout bundle
+        run: tar -C dist -czf dist/NBC_DocFormat_linux_bundle.tar.gz NBC_DocFormat_linux
 
       - name: Build AppImage (amd64)
         run: |
@@ -119,9 +139,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: linux-build
-          path: dist/NBC_DocFormat_linux_amd64.AppImage
+          path: |
+            dist/NBC_DocFormat_linux_amd64.AppImage
+            dist/NBC_DocFormat_linux_bundle.tar.gz
 
   build-linux-arm64:
+    needs: test-linux-ui
     runs-on: ubuntu-22.04-arm
     container:
       image: almalinux:8
@@ -147,8 +170,9 @@ jobs:
         run: |
           export LC_ALL=zh_CN.UTF-8
           DOCX_TEMPLATES=$(python3.9 -c "import docx, os; print(os.path.join(os.path.dirname(docx.__file__), 'templates'))")
-          pyinstaller --onefile --name=NBC_DocFormat_linux \
+          pyinstaller --onedir --name=NBC_DocFormat_linux \
             --add-data "scripts:scripts" \
+            --add-data "assets/icon.png:assets" \
             --add-data "assets/feature_smart.png:assets" \
             --add-data "assets/feature_analyze.png:assets" \
             --add-data "assets/feature_punctuation.png:assets" \
@@ -157,6 +181,9 @@ jobs:
             --add-data "${DOCX_TEMPLATES}:docx/templates" \
             --hidden-import=docx --hidden-import=lxml \
             NBC_DocFormat.py
+
+      - name: Archive installed-layout bundle
+        run: tar -C dist -czf dist/NBC_DocFormat_linux_bundle.tar.gz NBC_DocFormat_linux
 
       - name: Build AppImage (aarch64)
         run: |
@@ -170,7 +197,46 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: linux-arm64-build
-          path: dist/NBC_DocFormat_linux_aarch64.AppImage
+          path: |
+            dist/NBC_DocFormat_linux_aarch64.AppImage
+            dist/NBC_DocFormat_linux_bundle.tar.gz
+
+  package-linux-deb:
+    needs: [build-linux, build-linux-arm64]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            artifact: linux-build
+            runner: ubuntu-22.04
+          - arch: arm64
+            artifact: linux-arm64-build
+            runner: ubuntu-22.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/
+      - name: Build Debian package from AlmaLinux bundle
+        run: |
+          tar -C dist -xzf dist/NBC_DocFormat_linux_bundle.tar.gz
+          bash packaging/linux/build-deb.sh dist/NBC_DocFormat_linux ${{ matrix.arch }}
+          dpkg-deb --info dist/NBC_DocFormat_linux_${{ matrix.arch }}.deb
+      - name: Verify installed application starts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb xauth ./dist/NBC_DocFormat_linux_${{ matrix.arch }}.deb
+          status=0
+          xvfb-run -a timeout 8s NBC_DocFormat_linux > dist/linux-startup.log 2>&1 || status=$?
+          cat dist/linux-startup.log
+          test "$status" -eq 124
+          python3 -c "from pathlib import Path; assert 'Traceback' not in Path('dist/linux-startup.log').read_text()"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb-${{ matrix.arch }}
+          path: dist/NBC_DocFormat_linux_${{ matrix.arch }}.deb
 
   build-macos:
     name: build-macos (${{ matrix.arch_label }})
@@ -254,7 +320,7 @@ jobs:
             dist/${{ matrix.output_name }}
 
   release:
-    needs: [build-windows, build-windows-win7, build-linux, build-linux-arm64, build-macos]
+    needs: [build-windows, build-windows-win7, build-linux, build-linux-arm64, package-linux-deb, build-macos]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     
@@ -296,6 +362,12 @@ jobs:
         with:
           name: macos-intel-build
           path: dist/
+      - name: Download Linux Debian packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: linux-deb-*
+          merge-multiple: true
+          path: dist/
       - name: Download macOS Apple Silicon artifact
         uses: actions/download-artifact@v4
         with:
@@ -319,6 +391,8 @@ jobs:
             dist/NBC_DocFormat_windows_win7.exe
             dist/NBC_DocFormat_linux_amd64.AppImage
             dist/NBC_DocFormat_linux_aarch64.AppImage
+            dist/NBC_DocFormat_linux_amd64.deb
+            dist/NBC_DocFormat_linux_arm64.deb
             dist/NBC_DocFormat_macos_intel.dmg
             dist/NBC_DocFormat_macos_apple_silicon.dmg
           draft: false
