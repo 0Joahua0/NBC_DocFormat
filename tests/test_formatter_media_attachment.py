@@ -3,6 +3,8 @@
 import struct
 import zlib
 
+import pytest
+
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.oxml import OxmlElement
@@ -67,25 +69,29 @@ def test_format_document_preserves_mixed_and_standalone_media(tmp_path):
     assert "<w:object" in xml
 
 
-def test_standalone_attachment_starts_new_page_and_formats_following_title(tmp_path):
+@pytest.mark.parametrize('attachment_count', [1, 8])
+def test_standalone_attachment_starts_new_page_and_formats_following_title(tmp_path, attachment_count):
     source = tmp_path / "source.docx"
     output = tmp_path / "output.docx"
     doc = Document()
     doc.add_paragraph("关于附件格式的通知")
     doc.add_paragraph("正文内容。")
-    doc.add_paragraph("附件1")
-    doc.add_paragraph("专项工作实施方案")
-    doc.add_paragraph("一、工作目标")
+    for index in range(1, attachment_count + 1):
+        doc.add_paragraph(f"附件{index}")
+        doc.add_paragraph(f"专项工作实施方案{index}")
+        doc.add_paragraph(f"一、工作目标{index}")
+        doc.add_paragraph("这是附件正文，需要保持正文排版，不应误认为附件标题。")
     doc.save(source)
 
     format_document(str(source), str(output), preset_name="official", custom_settings={"page_number": False})
     formatted = Document(output)
-    marker = next(p for p in formatted.paragraphs if p.text.strip() == "附件1")
-    title = next(p for p in formatted.paragraphs if p.text.strip() == "专项工作实施方案")
-    heading = next(p for p in formatted.paragraphs if p.text.strip() == "一、工作目标")
-    assert marker.paragraph_format.page_break_before is True
-    assert marker.alignment == WD_ALIGN_PARAGRAPH.LEFT
-    assert marker.paragraph_format.left_indent == Pt(0)
-    assert marker.paragraph_format.first_line_indent == Pt(0)
-    assert title.alignment == WD_ALIGN_PARAGRAPH.CENTER
-    assert heading.alignment == WD_ALIGN_PARAGRAPH.LEFT
+    for index in range(1, attachment_count + 1):
+        marker = next(p for p in formatted.paragraphs if p.text.strip() == f"附件{index}")
+        title = next(p for p in formatted.paragraphs if p.text.strip() == f"专项工作实施方案{index}")
+        heading = next(p for p in formatted.paragraphs if p.text.strip() == f"一、工作目标{index}")
+        assert marker.paragraph_format.page_break_before is True
+        assert marker.alignment == WD_ALIGN_PARAGRAPH.LEFT
+        assert marker.paragraph_format.left_indent == Pt(0)
+        assert marker.paragraph_format.first_line_indent == Pt(0)
+        assert title.alignment == WD_ALIGN_PARAGRAPH.CENTER
+        assert heading.alignment == WD_ALIGN_PARAGRAPH.LEFT

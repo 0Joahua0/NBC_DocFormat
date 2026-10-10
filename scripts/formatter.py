@@ -1240,11 +1240,13 @@ def _looks_like_attachment_document_title(text, alignment=None):
     return alignment == WD_ALIGN_PARAGRAPH.CENTER or len(value) >= 4
 
 
-def _attachment_document_title_ids(doc):
+def _attachment_document_title_elements(doc):
     """找出“附件N”标记之后的附件正文标题段落。
 
     “附件N”本身是附件标记，紧随其后的第一个有效段落才可能是附件文档标题；
-    两者使用不同的版式，因此预扫描后用底层 ``w:p`` 身份记录标题。
+    两者使用不同的版式，因此预扫描后保留底层 ``w:p`` 元素本身。
+    不能只保存 id：lxml 可能回收临时 Python 包装对象并复用其地址，
+    使附件编号或其他段落误命中标题集合。
     """
     result = set()
     paragraphs = list(doc.paragraphs)
@@ -1259,7 +1261,7 @@ def _attachment_document_title_ids(doc):
             if _looks_like_attachment_document_title(
                 candidate.text, candidate.paragraph_format.alignment,
             ):
-                result.add(id(candidate._p))
+                result.add(candidate._p)
             break
     return result
 
@@ -2333,7 +2335,7 @@ def format_document(input_path, output_path, preset_name='official', progress_ca
     _strip_autospacing_from_styles(doc)
     structural_blank_ids = _ensure_structural_blank_lines(doc, body_line_spacing, body_spacing_type)
     _ensure_attachment_page_starts(doc)
-    attachment_document_title_ids = _attachment_document_title_ids(doc)
+    attachment_document_title_elements = _attachment_document_title_elements(doc)
     total_paras = len(doc.paragraphs)
     all_texts, all_texts_idx_map = _build_text_context(doc)
     
@@ -2361,7 +2363,7 @@ def format_document(input_path, output_path, preset_name='official', progress_ca
             continue
         
         # 附件正文标题由预扫描锁定；其他段落进入通用启发式分类器。
-        para_type = 'title' if id(para._p) in attachment_document_title_ids else detect_para_type(
+        para_type = 'title' if para._p in attachment_document_title_elements else detect_para_type(
             text, i, total_paras,
             para.paragraph_format.alignment,
             all_texts,
